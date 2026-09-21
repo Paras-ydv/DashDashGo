@@ -1,0 +1,107 @@
+{# Icons: 24x24 stroke glyphs, currentColor. #}
+{% macro icon(name, cls="") -%}
+<svg class="{{ cls }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+{%- if name == "check" %}<path d="M5 12.5l4.5 4.5L19 7.5"/>
+{%- elif name == "x" %}<path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/>
+{%- elif name == "spinner" %}<path d="M12 3a9 9 0 1 0 9 9"/>
+{%- elif name == "clock" %}<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>
+{%- elif name == "skip" %}<circle cx="12" cy="12" r="8.5"/><path d="M8.5 12h7"/>
+{%- elif name == "dot" %}<circle cx="12" cy="12" r="3" fill="currentColor" stroke="none"/>
+{%- elif name == "play" %}<path d="M8 5.5v13l10.5-6.5z" fill="currentColor" stroke="none"/>
+{%- elif name == "retry" %}<path d="M4.5 12a7.5 7.5 0 0 1 13-5.1L19.5 9"/><path d="M19.5 4.5V9H15"/><path d="M19.5 12a7.5 7.5 0 0 1-13 5.1L4.5 15"/><path d="M4.5 19.5V15H9"/>
+{%- elif name == "grid" %}<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>
+{%- elif name == "list" %}<path d="M9 6.5h11M9 12h11M9 17.5h11"/><circle cx="4.5" cy="6.5" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="17.5" r="1" fill="currentColor"/>
+{%- elif name == "pipe" %}<circle cx="5.5" cy="12" r="2.5"/><circle cx="18.5" cy="12" r="2.5"/><path d="M8 12h8"/>
+{%- elif name == "alert" %}<path d="M12 4.5l9 15.5H3z"/><path d="M12 10v4.5M12 17.2v.3"/>
+{%- elif name == "info" %}<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.3"/>
+{%- elif name == "chevron" %}<path d="M9.5 6l6 6-6 6"/>
+{%- elif name == "download" %}<path d="M12 4.5v11M7.5 11l4.5 4.5 4.5-4.5M5 19.5h14"/>
+{%- endif %}
+</svg>
+{%- endmacro %}
+
+{% set STATUS_ICON = {"success": "check", "failed": "x", "running": "spinner", "queued": "clock", "skipped": "skip"} %}
+{% set STATUS_LABEL = {"success": "Success", "failed": "Failed", "running": "Running", "queued": "Queued", "skipped": "Skipped"} %}
+
+{% macro status_pill(status) -%}
+{%- set s = status_state(status) -%}
+<span class="pill pill-{{ s }}">{{ icon(STATUS_ICON[s], "spin" if s == "running" else "") }}{{ STATUS_LABEL[s] }}</span>
+{%- endmacro %}
+
+{# One cell per run, oldest -> newest. Colour + tooltip text + legend; never colour alone. #}
+{% macro run_strip(statuses_runs) -%}
+<span class="strip" aria-label="Recent runs, oldest to newest">
+{%- for run in statuses_runs -%}
+<a href="/runs/{{ run.run_id }}" class="s-{{ status_state(run.status) }}" data-tip="{{ STATUS_LABEL[status_state(run.status)] }} · {{ run.started_at|ago }}
+{{ run.run_id }}{% if run.duration_ms is not none %} · {{ run.duration_ms|duration }}{% endif %}" aria-label="{{ STATUS_LABEL[status_state(run.status)] }} run {{ run.run_id }}"></a>
+{%- endfor -%}
+</span>
+{%- endmacro %}
+
+{% macro strip_legend() -%}
+<div class="legend" aria-hidden="true">
+  <span><i style="background: var(--good)"></i>Success</span>
+  <span><i style="background: var(--neutral)"></i>Skipped (duplicate)</span>
+  <span><i style="background: var(--critical)"></i>Failed</span>
+  <span><i style="background: var(--accent)"></i>Running</span>
+</div>
+{%- endmacro %}
+
+{# Single-series bar chart of run durations, oldest -> newest, with hover tooltips. #}
+{% macro duration_chart(runs) -%}
+{%- set width = 720 -%}{%- set height = 150 -%}{%- set pad_left = 44 -%}{%- set pad_bottom = 18 -%}
+{%- set max_ms = (runs | map(attribute="duration_ms") | max) or 1 -%}
+{%- set step = (width - pad_left) / (runs | length if runs | length > 12 else 12) -%}
+{%- set bar_w = [step - 4, 26] | min -%}
+<svg viewBox="0 0 {{ width }} {{ height }}" preserveAspectRatio="none" role="img" aria-label="Duration of the last {{ runs|length }} runs">
+  {%- for frac in [0, 0.5, 1] %}
+  {%- set y = (height - pad_bottom) - frac * (height - pad_bottom - 8) %}
+  <line class="grid-line" x1="{{ pad_left }}" x2="{{ width }}" y1="{{ y }}" y2="{{ y }}"/>
+  <text class="axis-label" x="{{ pad_left - 8 }}" y="{{ y + 4 }}" text-anchor="end">{{ (max_ms * frac)|duration if frac else "0" }}</text>
+  {%- endfor %}
+  {%- for run in runs %}
+  {%- set h = [(run.duration_ms / max_ms) * (height - pad_bottom - 8), 2] | max %}
+  {%- set x = pad_left + loop.index0 * step + (step - bar_w) / 2 %}
+  {%- set base = height - pad_bottom %}
+  {%- set r = [4, h, bar_w / 2] | min %}
+  <a href="/runs/{{ run.run_id }}" data-tip="{{ run.duration_ms|duration }} · {{ STATUS_LABEL[status_state(run.status)] }}
+{{ run.started_at|utc }}
+{{ run.records_inserted|count }} rows inserted" aria-label="Run {{ run.run_id }}: {{ run.duration_ms|duration }}">
+    <rect class="hit" x="{{ pad_left + loop.index0 * step }}" y="0" width="{{ step }}" height="{{ base }}"/>
+    <path class="bar" d="M{{ x }},{{ base }} V{{ base - h + r }} Q{{ x }},{{ base - h }} {{ x + r }},{{ base - h }} H{{ x + bar_w - r }} Q{{ x + bar_w }},{{ base - h }} {{ x + bar_w }},{{ base - h + r }} V{{ base }} Z"/>
+  </a>
+  {%- endfor %}
+</svg>
+{%- endmacro %}
+
+{% macro runs_table(runs, show_report=True, empty="No runs yet.") -%}
+{% if runs %}
+<div class="table-wrap"><table class="data">
+  <thead><tr>
+    <th>Status</th><th>Run</th>{% if show_report %}<th>Pipeline</th>{% endif %}<th>Trigger</th><th>Started</th>
+    <th class="num">Duration</th><th class="num">Rows in</th><th class="num">Rejected</th><th class="num">Loaded</th><th>Notes</th>
+  </tr></thead>
+  <tbody>
+  {% for run in runs %}
+  <tr>
+    <td>{{ status_pill(run.status) }}</td>
+    <td class="nowrap"><a class="mono" href="/runs/{{ run.run_id }}">{{ run.run_id }}</a></td>
+    {% if show_report %}<td><a href="/reports/{{ run.report }}">{{ run.report }}</a></td>{% endif %}
+    <td><span class="badge">{{ run.trigger.value }}</span></td>
+    <td class="nowrap" title="{{ run.started_at|utc }}">{{ run.started_at|ago }}</td>
+    <td class="num nowrap">{{ run.duration_ms|duration }}</td>
+    <td class="num">{{ run.records_downloaded|count if run.records_downloaded else "—" }}</td>
+    <td class="num">{{ run.records_rejected|count if run.records_rejected else "—" }}</td>
+    <td class="num">{{ run.records_inserted|count if run.records_inserted else "—" }}</td>
+    <td>
+      {% if run.error_message %}<div class="error-text" title="{{ run.error_message }}"><b>{{ run.error_stage }}</b> · {{ run.error_type }}: {{ run.error_message }}</div>
+      {% elif run.duplicate_of %}<span class="secondary">same data as <a class="mono" href="/runs/{{ run.duplicate_of }}">{{ run.duplicate_of[-6:] }}</a></span>
+      {% elif not run.status.is_terminal %}<span class="live-dot">{{ run.current_stage or "queued" }}</span>
+      {% else %}<span class="muted">{{ run.destination_table }}</span>{% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}<div class="empty">{{ empty }}</div>{% endif %}
+{%- endmacro %}

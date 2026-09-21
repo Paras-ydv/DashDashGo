@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% from "macros.html" import icon %}
+{% block title %}Unavailable{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Metadata store unavailable</h1>
+<p>DashDashGo could not read pipeline metadata from ClickHouse. Runs cannot be shown until it is reachable.</p></div></div>
+<div class="error-panel">{{ icon("alert") }}<div><h2>ClickHouse error</h2><p class="mono">{{ error }}</p>
+<p class="secondary">Check <a href="/api/health">/api/health</a> and the ClickHouse container logs.</p></div></div>
+{% endblock %}

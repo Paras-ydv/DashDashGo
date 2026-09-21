@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% from "macros.html" import icon, status_pill, runs_table, duration_chart %}
+{% block title %}{{ name }}{% endblock %}
+{% block content %}
+{% set src = config.source %}{% set ing = config.ingestion %}{% set dest = config.destination %}
+<div id="live-root" data-live="{{ 'true' if live else 'false' }}">
+<div class="page-head">
+  <div>
+    <div class="crumbs"><a href="/">Pipelines</a> / {{ name }}</div>
+    <h1 class="mono">{{ name }}</h1>
+    {% if config.description %}<p>{{ config.description }}</p>{% endif %}
+    <div class="meta-row">
+      <span><b>Schedule</b>{% if config.schedule.enabled and config.enabled %}<code>{{ config.schedule.cron }}</code> {{ config.schedule.timezone }}{% if next_run %} · next {{ next_run|ago }}{% endif %}{% else %}on demand{% endif %}</span>
+      <span><b>Last run</b>{% if stats.last_run %}{{ status_pill(stats.last_run.status) }} <a href="/runs/{{ stats.last_run.run_id }}">{{ stats.last_run.started_at|ago }}</a>{% else %}never{% endif %}</span>
+      {% if not config.enabled %}<span class="pill pill-skipped">{{ icon("skip") }}Disabled</span>{% endif %}
+      {% if live %}<span class="live-dot">Run in progress</span>{% endif %}
+    </div>
+  </div>
+  <div class="actions">
+    <button class="btn" type="button" data-run-report="{{ name }}" data-force="1"
+      title="Load even if identical data was already ingested">{{ icon("retry") }}Force reload</button>
+    <button class="btn btn-primary" type="button" data-run-report="{{ name }}">{{ icon("play") }}Run now</button>
+  </div>
+</div>
+
+<section class="card" aria-label="Pipeline stages" style="margin-bottom: 20px">
+  <div class="flow">
+    <div class="flow-step">
+      <div class="flow-kicker"><span class="idx">01</span>Source</div>
+      <div class="flow-title">{{ src.platform|capitalize }}</div>
+      <ul>
+        <li><code>{{ src.base_url }}</code></li>
+        <li>{{ (src.location.collection + [src.location.target_name] + ([src.location.card] if src.location.card else []))|join(" › ") }}</li>
+        <li>Signed in as {{ src.credentials.username }}</li>
+        {% for k, v in src.filters.items() %}<li>Filter <code>{{ k }}={{ v }}</code></li>{% endfor %}
+      </ul>
+    </div>
+    <div class="flow-step">
+      <div class="flow-kicker"><span class="idx">02</span>Acquire</div>
+      <div class="flow-title">Download {{ src.export.format.value|upper }}</div>
+      <ul>
+        <li>{{ config.browser.engine }}, {{ "headless" if config.browser.headless else "headed" }}</li>
+        <li>Timeouts {{ config.browser.timeout_ms // 1000 }}s / download {{ config.browser.download_timeout_ms // 1000 }}s</li>
+        <li>Up to {{ config.retry.max_attempts }} attempts, backoff ×{{ config.retry.backoff_multiplier|round(1) }}</li>
+        <li>Screenshots on failure: {{ "on" if config.browser.screenshot_on_failure else "off" }} · trace {{ config.browser.trace }}</li>
+      </ul>
+    </div>
+    <div class="flow-step">
+      <div class="flow-kicker"><span class="idx">03</span>Transform</div>
+      <div class="flow-title">{{ ing.transforms|length }} step{{ "" if ing.transforms|length == 1 else "s" }}</div>
+      <ul>{% for step in ing.transforms %}<li class="clip" title="{{ step.describe() }}"><code>{{ step.describe() }}</code></li>{% else %}<li class="muted">No transforms</li>{% endfor %}</ul>
+    </div>
+    <div class="flow-step">
+      <div class="flow-kicker"><span class="idx">04</span>Validate</div>
+      <div class="flow-title">{{ dest.columns|length }} typed columns</div>
+      <ul>
+        {% if ing.expected_columns %}<li>{{ ing.expected_columns|length }} expected source columns</li>{% endif %}
+        {% for rule in ing.quality.rules %}<li><code>{{ rule.column }}</code>
+          {%- if rule.min is not none %} ≥ {{ rule.min|round(2) }}{% endif %}{% if rule.max is not none %} ≤ {{ rule.max|round(2) }}{% endif %}
+          {%- if rule.allowed %} in [{{ rule.allowed|join(", ") }}]{% endif %}{% if rule.pattern %} ~ <code>{{ rule.pattern }}</code>{% endif %}{% if rule.not_null %} not null{% endif %}</li>{% endfor %}
+        <li>Invalid rows: {{ ing.quality.on_invalid_rows }} (max {{ "%.0f"|format(ing.quality.max_invalid_ratio * 100) }}%)</li>
+        <li>Unique key: <code>{{ config.unique_key|join(", ") }}</code></li>
+      </ul>
+    </div>
+    <div class="flow-step">
+      <div class="flow-kicker"><span class="idx">05</span>Load &amp; distribute</div>
+      <div class="flow-title mono">{{ dest.qualified_table }}</div>
+      <ul>
+        <li>ReplacingMergeTree, ORDER BY <code>{{ dest.order_by|join(", ") }}</code></li>
+        {% if dest.partition_by %}<li>PARTITION BY <code>{{ dest.partition_by }}</code></li>{% endif %}
+        <li><a href="/api/reports/{{ name }}/data">GET /api/reports/{{ name }}/data</a></li>
+        <li><a href="/api/reports/{{ name }}/data?format=csv&amp;limit=10000">Download CSV</a></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="tiles" aria-label="All-time statistics">
+  <div class="tile"><div class="tile-label">Runs</div><div class="tile-value">{{ stats.total_runs|count }}</div><div class="tile-sub">all time</div></div>
+  <div class="tile"><div class="tile-label">Loaded</div><div class="tile-value">{{ stats.successful_runs|count }}</div><div class="tile-sub">{{ stats.skipped_runs }} skipped as duplicate</div></div>
+  <div class="tile"><div class="tile-label">Failed</div><div class="tile-value">{{ stats.failed_runs|count }}</div><div class="tile-sub"><a href="/runs?report={{ name }}&amp;status=FAILED">View failures</a></div></div>
+  <div class="tile"><div class="tile-label">Rows loaded</div><div class="tile-value">{{ stats.rows_inserted|count }}</div><div class="tile-sub">across successful runs</div></div>
+  <div class="tile"><div class="tile-label">Avg duration</div><div class="tile-value">{{ stats.avg_duration_ms|duration }}</div><div class="tile-sub">successful runs</div></div>
+</section>
+
+<div class="stack">
+  <section class="card">
+    <div class="card-head"><div><h2>Run duration</h2><p>Last {{ chart_runs|length }} finished runs, oldest to newest. Hover a bar for details.</p></div></div>
+    {% if chart_runs %}<div class="chart">{{ duration_chart(chart_runs) }}</div>{% else %}<div class="empty">No finished runs yet.</div>{% endif %}
+  </section>
+
+  <section class="card">
+    <div class="card-head"><div><h2>Run history</h2></div><a href="/runs?report={{ name }}">All runs →</a></div>
+    {{ runs_table(runs, show_report=False, empty="This pipeline has not run yet.") }}
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div><h2>Data preview</h2><p>Current rows in <code>{{ dest.qualified_table }}</code> (deduplicated with <code>FINAL</code>){% if preview %} · {{ preview.total|count }} rows total{% endif %}.</p></div>
+      <a class="btn btn-sm" href="/api/reports/{{ name }}/data?format=csv&amp;limit=10000">{{ icon("download") }}CSV</a>
+    </div>
+    {% if preview and preview.rows %}
+    <div class="table-wrap"><table class="data">
+      <thead><tr>{% for c in preview.columns %}<th>{{ c }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for row in preview.rows %}<tr>{% for c in preview.columns %}
+        <td class="{{ 'mono nowrap' if c.startswith('_') else 'nowrap' }}">{% if row[c] is none %}<span class="muted">null</span>{% elif c == '_run_id' %}<a href="/runs/{{ row[c] }}">{{ row[c] }}</a>{% else %}{{ row[c] }}{% endif %}</td>
+      {% endfor %}</tr>{% endfor %}</tbody>
+    </table></div>
+    {% elif preview_error %}<div class="empty">Table not available yet: {{ preview_error }}</div>
+    {% else %}<div class="empty">No rows loaded yet.</div>{% endif %}
+  </section>
+
+  <div class="grid-2">
+    <details class="card section">
+      <summary class="card-head"><div><h2>Configuration</h2><p>reports/{{ name }}.yaml, resolved; secrets masked</p></div>{{ icon("chevron", "chev") }}</summary>
+      <pre class="code">{{ config_yaml }}</pre>
+    </details>
+    <details class="card section">
+      <summary class="card-head"><div><h2>Destination schema</h2><p>Generated DDL</p></div>{{ icon("chevron", "chev") }}</summary>
+      <pre class="code">{{ ddl }};</pre>
+    </details>
+  </div>
+</div>
+</div>
+{% endblock %}

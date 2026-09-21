@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% from "macros.html" import runs_table %}
+{% block title %}Runs{% endblock %}
+{% block content %}
+<div id="live-root" data-live="{{ 'true' if live else 'false' }}">
+<div class="page-head">
+  <div><h1>Runs</h1><p>Every execution of every pipeline, newest first.</p></div>
+  <form class="filters" method="get" action="/runs">
+    <select name="report" aria-label="Pipeline" onchange="this.form.submit()">
+      <option value="">All pipelines</option>
+      {% for n in nav_reports %}<option value="{{ n }}" {% if n == report %}selected{% endif %}>{{ n }}</option>{% endfor %}
+    </select>
+    <select name="status" aria-label="Status" onchange="this.form.submit()">
+      <option value="">Any status</option>
+      {% for s in statuses %}<option value="{{ s }}" {% if s == status %}selected{% endif %}>{{ s|capitalize }}</option>{% endfor %}
+    </select>
+    <noscript><button class="btn btn-sm" type="submit">Apply</button></noscript>
+  </form>
+</div>
+<section class="card">
+  {{ runs_table(runs, empty="No runs match these filters.") }}
+</section>
+<div class="actions" style="margin-top: 14px; justify-content: flex-end">
+  {% if page_no > 1 %}<a class="btn btn-sm" href="?report={{ report }}&amp;status={{ status }}&amp;page_no={{ page_no - 1 }}">← Newer</a>{% endif %}
+  {% if has_next %}<a class="btn btn-sm" href="?report={{ report }}&amp;status={{ status }}&amp;page_no={{ page_no + 1 }}">Older →</a>{% endif %}
+</div>
+</div>
+{% endblock %}

@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% from "macros.html" import icon, status_pill %}
+{% block title %}Run {{ run.run_id }}{% endblock %}
+
+{% macro step_icon(state) -%}
+{%- if state == "success" %}{{ icon("check") }}{% elif state == "failed" %}{{ icon("x") }}{% elif state == "running" %}{{ icon("spinner", "spin") }}{% elif state == "skipped" %}{{ icon("skip") }}{% else %}{{ icon("dot") }}{% endif -%}
+{%- endmacro %}
+{% macro sub_class(state) -%}{{ {"success": "ok", "failed": "bad", "running": "run"}.get(state, "idle") }}{%- endmacro %}
+
+{% block content %}
+<div id="live-root" data-live="{{ 'true' if live else 'false' }}">
+<div class="page-head">
+  <div>
+    <div class="crumbs"><a href="/runs">Runs</a> / <a href="/reports/{{ run.report }}">{{ run.report }}</a></div>
+    <h1 style="display:flex; gap:12px; align-items:center; flex-wrap:wrap"><span class="mono">{{ run.run_id }}</span> {{ status_pill(run.status) }}</h1>
+    <div class="meta-row">
+      <span><b>Pipeline</b><a href="/reports/{{ run.report }}">{{ run.report }}</a></span>
+      <span><b>Trigger</b><span class="badge">{{ run.trigger.value }}</span></span>
+      <span><b>Started</b>{{ run.started_at|utc }}</span>
+      <span><b>Duration</b>{{ run.duration_ms|duration }}</span>
+      {% if run.parent_run_id %}<span><b>Retry of</b><a class="mono" href="/runs/{{ run.parent_run_id }}">{{ run.parent_run_id }}</a></span>{% endif %}
+      {% if live %}<span class="live-dot">Live</span>{% endif %}
+    </div>
+  </div>
+  <div class="actions">
+    {% if run.status.is_terminal %}
+    <button class="btn {{ 'btn-primary' if run.status.value == 'FAILED' else '' }}" type="button" data-retry-run="{{ run.run_id }}">{{ icon("retry") }}{{ "Retry" if run.status.value == "FAILED" else "Run again" }}</button>
+    {% endif %}
+  </div>
+</div>
+
+<div class="stack">
+  {% if run.status.value == "FAILED" %}
+  <div class="error-panel" role="alert">{{ icon("alert") }}
+    <div style="min-width:0">
+      <h2>Failed at <span class="mono">{{ run.error_stage }}</span> · {{ run.error_type }}</h2>
+      <p>{{ run.error_message }}</p>
+    </div>
+  </div>
+  {% elif run.status.value == "SKIPPED" %}
+  <div class="notice">{{ icon("info") }}<div>Nothing was loaded: the downloaded data is identical to what run
+    <a class="mono" href="/runs/{{ run.duplicate_of }}">{{ run.duplicate_of }}</a> already ingested (same content fingerprint).
+    Use <b>Force reload</b> on the pipeline page to load it anyway.</div></div>
+  {% endif %}
+
+  {% if screenshots %}
+  <section class="card">
+    <div class="card-head"><div><h2>Failure screenshots</h2><p>Captured by the browser at the moment a step failed.</p></div></div>
+    <div class="card-body shots">
+      {% for shot in screenshots %}
+      <a class="shot" href="/api/artifacts/{{ shot.key }}" target="_blank" rel="noopener"><img src="/api/artifacts/{{ shot.key }}" alt="Screenshot {{ shot.name }}" loading="lazy"><span>{{ shot.name }}</span></a>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <div class="grid-2">
+    <section class="card">
+      <div class="card-head"><div><h2>Timeline</h2><p>Each stage as recorded while the run executed.</p></div></div>
+      <ol class="timeline">
+      {% for step in timeline %}
+        <li class="tl-item tl-{{ step.state }}">
+          <span class="tl-icon">{{ step_icon(step.state) }}</span>
+          <div style="min-width:0">
+            <div class="tl-label">{{ step.label }}</div>
+            {% if step.message %}<div class="tl-msg">{{ step.message }}</div>{% endif %}
+            {% if step.details.rejected_file %}<div class="tl-msg"><a href="/api/artifacts/{{ step.details.rejected_file }}">Rejected rows (CSV)</a>
+              {% for problem, n in step.details.problems.items() %} · {{ problem }} ×{{ n }}{% endfor %}</div>{% endif %}
+            {% for attempt in step.attempts %}
+              {% if step.attempts|length > 1 %}<div class="attempt-head">Attempt {{ attempt.number }}{% if attempt.state == "failed" %} · failed{% endif %}</div>{% endif %}
+              {% if loop.last or attempt.state == "failed" %}
+              <ul class="tl-sub">
+                {% for sub in attempt.steps %}
+                <li><span class="{{ sub_class(sub.state) }}">{{ step_icon(sub.state) }}</span>
+                  <span style="min-width:0"><span class="{{ '' if sub.state in ('success','failed','running') else 'muted' }}">{{ sub.label }}</span>{% if sub.message %}<span class="muted"> · {{ sub.message }}</span>{% endif %}</span>
+                  <span class="mono muted">{{ sub.duration_ms|duration if sub.duration_ms is not none else "" }}</span></li>
+                {% endfor %}
+              </ul>
+              {% endif %}
+            {% endfor %}
+          </div>
+          <span class="tl-time">{{ step.duration_ms|duration if step.duration_ms is not none else "" }}</span>
+        </li>
+      {% endfor %}
+        <li class="tl-item tl-{{ 'success' if run.status.value in ('SUCCESS', 'SKIPPED') else ('failed' if run.status.value == 'FAILED' else 'pending') }}">
+          <span class="tl-icon">{{ step_icon('success' if run.status.value in ('SUCCESS', 'SKIPPED') else ('failed' if run.status.value == 'FAILED' else 'pending')) }}</span>
+          <div><div class="tl-label">{{ run.status.value }}</div></div><span class="tl-time">{{ run.duration_ms|duration if run.duration_ms is not none else "" }}</span>
+        </li>
+      </ol>
+    </section>
+
+    <div class="stack">
+      <section class="card">
+        <div class="card-head"><h2>Result</h2></div>
+        <div class="card-body">
+          <dl class="kv">
+            <dt>Rows downloaded</dt><dd>{{ run.records_downloaded|count }}</dd>
+            <dt>Rows rejected</dt><dd>{{ run.records_rejected|count }}</dd>
+            <dt>Rows loaded</dt><dd>{{ run.records_inserted|count }}</dd>
+            <dt>Destination</dt><dd class="mono">{{ run.destination_table or "—" }}</dd>
+            <dt>Acquisition attempts</dt><dd>{{ run.attempts }}</dd>
+            <dt>File SHA-256</dt><dd class="mono">{{ run.file_hash[:16] or "—" }}{% if run.file_hash %}…{% endif %}</dd>
+            <dt>Data fingerprint</dt><dd class="mono">{{ run.data_hash[:16] or "—" }}{% if run.data_hash %}…{% endif %}</dd>
+            <dt>Finished</dt><dd>{{ run.finished_at|utc }}</dd>
+          </dl>
+        </div>
+      </section>
+      <section class="card">
+        <div class="card-head"><div><h2>Artifacts</h2><p>Stored under <code>&lt;area&gt;/{{ run.report }}/{{ run.run_date }}/{{ run.run_id }}/</code></p></div></div>
+        {% for area, items in artifacts.items() %}
+          <div class="artifact-area">{{ area }}</div>
+          <ul class="artifact-list">
+          {% for a in items %}<li><a class="mono" href="/api/artifacts/{{ a.key }}">{{ a.name }}</a><span class="muted nowrap">{{ a.size|bytes }}</span></li>{% endfor %}
+          </ul>
+        {% else %}<div class="empty">No artifacts stored.</div>{% endfor %}
+      </section>
+    </div>
+  </div>
+
+  <section class="card">
+    <div class="card-head">
+      <div><h2>Logs</h2><p>{{ logs|length }} structured lines from this run.</p></div>
+      <div class="segmented" role="group" aria-label="Minimum level">
+        <button type="button" data-log-filter="DEBUG" aria-pressed="false">All</button>
+        <button type="button" data-log-filter="INFO" aria-pressed="true">Info</button>
+        <button type="button" data-log-filter="WARNING" aria-pressed="false">Warnings</button>
+        <button type="button" data-log-filter="ERROR" aria-pressed="false">Errors</button>
+      </div>
+    </div>
+    <div class="console" role="log">
+      {% for line in logs %}
+      <div class="log-line" data-level="{{ line.level }}" {% if line.level == "DEBUG" %}hidden{% endif %}>
+        <span class="log-ts">{{ line.ts[11:23] }}</span><span class="log-level">{{ line.level }}</span><span class="log-stage">{{ line.stage }}</span><span class="log-msg">{{ line.message }}</span>
+        {% if line.exception %}<span class="log-exc">{{ line.exception }}</span>{% endif %}
+      </div>
+      {% else %}<div class="log-line"><span></span><span></span><span></span><span class="log-msg">No log output yet.</span></div>{% endfor %}
+    </div>
+  </section>
+</div>
+</div>
+{% endblock %}

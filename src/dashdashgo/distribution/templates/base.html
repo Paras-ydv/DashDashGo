@@ -1,0 +1,39 @@
+{% from "macros.html" import icon %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}DashDashGo{% endblock %} · DashDashGo</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23151514'/%3E%3Cpath d='M8 16h9m-3-5 5 5-5 5' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <a class="brand" href="/">
+      <span class="brand-mark">--›</span>
+      <span><span class="brand-name">DashDashGo</span><span class="brand-sub">Report pipelines</span></span>
+    </a>
+    <nav class="nav" aria-label="Main">
+      <a href="/" {% if page == "overview" %}aria-current="page"{% endif %}>{{ icon("grid") }}Overview</a>
+      <a href="/runs" {% if page == "runs" %}aria-current="page"{% endif %}>{{ icon("list") }}Runs</a>
+    </nav>
+    <nav class="nav nav-reports" aria-label="Pipelines">
+      <div class="nav-title">Pipelines</div>
+      {% for name in nav_reports %}
+      <a href="/reports/{{ name }}" {% if page == name %}aria-current="page"{% endif %}>{{ icon("pipe") }}<span class="mono">{{ name }}</span></a>
+      {% endfor %}
+    </nav>
+    <div class="sidebar-foot">
+      <a href="/docs">API reference</a>
+      <span>v{{ version }}</span>
+      <button class="theme-toggle" type="button" data-theme-toggle>Toggle theme</button>
+    </div>
+  </aside>
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

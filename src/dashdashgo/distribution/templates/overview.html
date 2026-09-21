@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% from "macros.html" import icon, status_pill, run_strip, strip_legend, runs_table %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<div id="live-root" data-live="{{ 'true' if live else 'false' }}">
+<div class="page-head">
+  <div>
+    <h1>Overview</h1>
+    <p>Pipelines that acquire dashboard reports, validate them and load them into ClickHouse. Figures cover the last {{ stats.window_days }} days.</p>
+  </div>
+  {% if live %}<span class="live-dot">Live · updating</span>{% endif %}
+</div>
+
+<section class="tiles" aria-label="Last {{ stats.window_days }} days">
+  <div class="tile"><div class="tile-label">Runs</div><div class="tile-value">{{ stats.total_runs|count }}</div>
+    <div class="tile-sub">{{ stats.running_runs }} in progress</div></div>
+  <div class="tile"><div class="tile-label">Success rate</div>
+    <div class="tile-value">{% if stats.success_rate is not none %}{{ "%.0f"|format(stats.success_rate * 100) }}%{% else %}—{% endif %}</div>
+    <div class="tile-sub">{{ stats.successful_runs }} loaded · {{ stats.skipped_runs }} duplicate</div></div>
+  <div class="tile"><div class="tile-label">Failed runs</div><div class="tile-value">{{ stats.failed_runs|count }}</div>
+    <div class="tile-sub"><a href="/runs?status=FAILED">View failures</a></div></div>
+  <div class="tile"><div class="tile-label">Rows loaded</div><div class="tile-value">{{ stats.rows_inserted|count }}</div>
+    <div class="tile-sub">{{ stats.rows_rejected|count }} rows rejected</div></div>
+  <div class="tile"><div class="tile-label">Median duration</div><div class="tile-value">{{ stats.median_duration_ms|duration }}</div>
+    <div class="tile-sub">successful runs</div></div>
+  <div class="tile"><div class="tile-label">Pipelines</div><div class="tile-value">{{ reports|length }}</div>
+    <div class="tile-sub">{{ scheduled }} scheduled{% if invalid %} · {{ invalid|length }} invalid{% endif %}</div></div>
+</section>
+
+<div class="stack">
+  <section class="card">
+    <div class="card-head">
+      <div><h2>Pipelines</h2><p>One per file in <code>reports/</code>. The strip shows each pipeline's recent runs, oldest to newest.</p></div>
+      {{ strip_legend() }}
+    </div>
+    <div class="table-wrap"><table class="data">
+      <thead><tr><th>Pipeline</th><th>Format</th><th>Destination</th><th>Schedule</th><th>Last run</th><th>Recent runs</th><th></th></tr></thead>
+      <tbody>
+      {% for r in reports %}
+      {% set cfg = r.config %}
+      <tr>
+        <td><a class="cell-title mono" href="/reports/{{ r.name }}">{{ r.name }}</a>
+          <div class="cell-sub">{{ cfg.source.location.collection|join(" / ") }} / {{ cfg.source.location.target_name }}{% if cfg.source.location.card %} / {{ cfg.source.location.card }}{% endif %}</div></td>
+        <td><span class="badge">{{ cfg.source.export.format.value }}</span></td>
+        <td class="mono">{{ cfg.destination.qualified_table }}</td>
+        <td class="nowrap">
+          {% if cfg.schedule.enabled and cfg.enabled %}<code>{{ cfg.schedule.cron }}</code>
+            <div class="cell-sub">{% if r.next_run %}next {{ r.next_run|ago }}{% else %}{{ cfg.schedule.timezone }}{% endif %}</div>
+          {% else %}<span class="muted">On demand</span>{% endif %}
+        </td>
+        <td class="nowrap">
+          {% if r.stats.last_run %}{{ status_pill(r.stats.last_run.status) }}
+            <div class="cell-sub"><a href="/runs/{{ r.stats.last_run.run_id }}">{{ r.stats.last_run.started_at|ago }}</a></div>
+          {% else %}<span class="muted">Never run</span>{% endif %}
+        </td>
+        <td>{% if r.stats.recent_runs %}{{ run_strip(r.stats.recent_runs) }}{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td class="num"><button class="btn btn-sm" type="button" data-run-report="{{ r.name }}">{{ icon("play") }}Run</button></td>
+      </tr>
+      {% endfor %}
+      {% for name, error in invalid.items() %}
+      <tr><td class="mono">{{ name }}</td><td colspan="6"><span class="pill pill-failed">{{ icon("x") }}Invalid config</span>
+        <div class="error-text" title="{{ error.message }}">{{ error.message }}</div></td></tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><div><h2>Recent runs</h2><p>Across all pipelines.</p></div><a href="/runs">All runs →</a></div>
+    {{ runs_table(recent, empty="No runs yet. Start one with the Run button above or `dashdashgo run <report>`.") }}
+  </section>
+</div>
+</div>
+{% endblock %}
