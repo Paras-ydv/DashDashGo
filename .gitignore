@@ -17,9 +17,9 @@ dist/
 build/
 
 # Runtime artifacts (raw downloads, screenshots, logs, traces)
-storage/
-artifacts/
-test-results/
+/storage/
+/artifacts/
+/test-results/
 
 # Editors / OS
 .DS_Store
