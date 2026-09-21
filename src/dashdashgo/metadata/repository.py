@@ -91,6 +91,7 @@ CREATE TABLE IF NOT EXISTS `{db}`.pipeline_runs
     error_type         LowCardinality(String),
     error_message      String,
     error_stage        LowCardinality(String),
+    executed_on        String,
     updated_at         DateTime64(3, 'UTC')
 )
 ENGINE = ReplacingMergeTree(updated_at)
@@ -116,6 +117,8 @@ ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (run_id, stage, attempt)
 """
 
+_ADDED_RUN_COLUMNS: list[tuple[str, str]] = [("executed_on", "String")]
+
 _RUN_FIELDS = list(RunRecord.model_fields)
 _STAGE_FIELDS = list(StageRecord.model_fields)
 
@@ -137,6 +140,12 @@ class ClickHouseRunRepository(RunRepository):
         self._ch.command(f"CREATE DATABASE IF NOT EXISTS `{self._db}`")
         self._ch.command(_RUNS_DDL.format(db=self._db))
         self._ch.command(_STAGES_DDL.format(db=self._db))
+        # Additive migrations for tables created by earlier versions.
+        for column, ctype in _ADDED_RUN_COLUMNS:
+            self._ch.command(
+                f"ALTER TABLE `{self._db}`.pipeline_runs "
+                f"ADD COLUMN IF NOT EXISTS {column} {ctype} AFTER error_stage"
+            )
 
     # --- writes ---------------------------------------------------------------
 

@@ -16,6 +16,10 @@ class LocalStorage(StorageBackend):
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
 
+    @property
+    def location(self) -> str:
+        return str(self.root)
+
     def _path(self, key: str) -> Path:
         """Resolve a key inside the root; reject traversal such as ``../../etc/passwd``."""
         relative = PurePosixPath(key.lstrip("/"))

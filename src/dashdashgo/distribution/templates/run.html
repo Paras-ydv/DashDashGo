@@ -115,6 +115,7 @@
             <dt>File SHA-256</dt><dd class="mono">{{ run.file_hash[:16] or "—" }}{% if run.file_hash %}…{% endif %}</dd>
             <dt>Data fingerprint</dt><dd class="mono">{{ run.data_hash[:16] or "—" }}{% if run.data_hash %}…{% endif %}</dd>
             <dt>Finished</dt><dd>{{ run.finished_at|utc }}</dd>
+            <dt>Executed on</dt><dd class="mono">{{ run.executed_on or "—" }}</dd>
           </dl>
         </div>
       </section>
@@ -146,7 +147,7 @@
         <span class="log-ts">{{ line.ts[11:23] }}</span><span class="log-level">{{ line.level }}</span><span class="log-stage">{{ line.stage }}</span><span class="log-msg">{{ line.message }}</span>
         {% if line.exception %}<span class="log-exc">{{ line.exception }}</span>{% endif %}
       </div>
-      {% else %}<div class="log-line"><span></span><span></span><span></span><span class="log-msg">No log output yet.</span></div>{% endfor %}
+      {% else %}<div class="log-line"><span></span><span></span><span></span><span class="log-msg">{% if run.status.is_terminal %}No log file in this server's storage ({{ storage_location }}).{% if run.executed_on and not run.executed_on.endswith(":" ~ storage_location) %} This run was executed on <b>{{ run.executed_on }}</b>, so its log and artifacts were written there.{% endif %}{% else %}No log output yet.{% endif %}</span></div>{% endfor %}
     </div>
   </section>
 </div>

@@ -337,3 +337,12 @@ def test_cron_ranges_and_steps_translate() -> None:
 
     assert "mon-fri" in str(cron_trigger("0 9 * * 1-5", "UTC"))
     assert "*/2" in str(cron_trigger("0 9 * * */2", "UTC"))
+
+
+def test_run_page_explains_logs_stored_elsewhere(client: Any) -> None:
+    test_client, runs, _ = client
+    run = seed_run(runs, RunStatus.SUCCESS)
+    runs.save_run(run.model_copy(update={"executed_on": "laptop:/tmp/other-storage"}))
+    page = test_client.get(f"/runs/{run.run_id}").text
+    assert "No log file in this server" in page
+    assert "laptop:/tmp/other-storage" in page

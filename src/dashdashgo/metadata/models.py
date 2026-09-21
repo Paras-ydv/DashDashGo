@@ -80,6 +80,8 @@ class RunRecord(BaseModel):
     error_type: str = ""
     error_message: str = ""
     error_stage: str = ""
+    executed_on: str = ""
+    """host:storage-location of the process that ran it - where its logs/artifacts live."""
     updated_at: UtcDatetime = Field(default_factory=utcnow)
 
     @property

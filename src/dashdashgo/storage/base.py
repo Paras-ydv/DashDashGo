@@ -52,6 +52,11 @@ class StorageBackend(ABC):
         in place; a remote backend would upload the file when the block exits.
         """
 
+    @property
+    @abstractmethod
+    def location(self) -> str:
+        """Human-readable place artifacts are written to (path or bucket URL)."""
+
     @abstractmethod
     def prune(self, older_than: date) -> int:
         """Delete run artifacts from dates before ``older_than``; return objects removed."""

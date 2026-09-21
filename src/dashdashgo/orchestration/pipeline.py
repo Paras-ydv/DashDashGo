@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import socket
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -85,6 +86,7 @@ class PipelineOrchestrator:
 
     def _execute(self, report: ReportConfig, ctx: RunContext, tracker: RunTracker) -> None:
         tracker.start()
+        tracker.update(executed_on=f"{socket.gethostname()}:{self._storage.location}")
         log.info(
             "Starting pipeline for '%s' (trigger=%s%s)",
             report.name,

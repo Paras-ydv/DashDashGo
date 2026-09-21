@@ -232,6 +232,7 @@ def run_page(request: Request, run_id: str) -> HTMLResponse:
         artifacts=artifacts,
         screenshots=screenshots,
         logs=read_run_log(state.container.storage, run),
+        storage_location=state.container.storage.location,
         live=not run.status.is_terminal,
         page="runs",
     )

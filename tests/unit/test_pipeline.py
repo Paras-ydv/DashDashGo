@@ -306,3 +306,9 @@ def test_diagnostic_card_escapes_error_text(report: ReportConfig) -> None:
     )
     assert "<script>x" not in html and "&lt;script&gt;" in html
     assert "login (attempt 2)" in html
+
+
+def test_run_records_where_it_executed(tmp_path: Path, report: ReportConfig) -> None:
+    orchestrator, _, _, storage = build(tmp_path)
+    run = orchestrator.run(report, new_run(report.name)).run
+    assert run.executed_on.endswith(f":{storage.location}")

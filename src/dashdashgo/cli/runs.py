@@ -162,6 +162,8 @@ def cmd_show(args: argparse.Namespace) -> int:
     )
     if run.parent_run_id:
         print(f"retry of {run.parent_run_id}")
+    if run.executed_on:
+        print(f"executed on {run.executed_on}")
     print(
         f"rows: downloaded={run.records_downloaded} rejected={run.records_rejected} "
         f"loaded={run.records_inserted} -> {run.destination_table or '-'}"
