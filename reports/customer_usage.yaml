@@ -1,0 +1,69 @@
+# Scenario 2 - Customer Usage Dashboard
+# Log in, filter the dashboard to the last 7 days, export XLSX, pivot the long
+# (day, account, metric, value) rows into one row per account-day and load into
+# analytics.daily_usage.
+#
+# Runs daily over a rolling 7-day window, so consecutive runs overlap by 6 days.
+# The table's ReplacingMergeTree keeps exactly one row per (usage_date, account_id).
+name: customer_usage
+description: >-
+  Daily product usage per customer account (last 7 days), exported as XLSX from
+  the Customer Usage dashboard and pivoted to one row per account and day.
+
+source:
+  platform: metabase
+  base_url: ${METABASE_URL}
+  credentials:
+    username: ${METABASE_USERNAME}
+    password: ${METABASE_PASSWORD}
+  location:
+    collection: [Customer Success]
+    dashboard: Customer Usage
+    card: Daily Customer Usage
+  filters:
+    usage_date: past7days     # Metabase relative-date syntax for "Previous 7 days"
+  export:
+    format: xlsx
+
+ingestion:
+  reader:
+    sheet: Query result
+  expected_columns: [Usage Date, Account ID, Account, Plan, Metric, Value]
+  transforms:
+    - normalize_columns
+    - rename: {columns: {account: account_name}}
+    - pivot:
+        index: [usage_date, account_id, account_name, plan]
+        columns: metric
+        values: value
+  quality:
+    on_invalid_rows: quarantine
+    max_invalid_ratio: 0.05
+    rules:
+      - {column: account_id, pattern: "ACC-\\d{4}"}
+      - {column: plan, allowed: [Starter, Growth, Enterprise]}
+      - {column: storage_gb, min: 0}
+
+destination:
+  database: analytics
+  table: daily_usage
+  partition_by: toYYYYMM(usage_date)
+  order_by: [usage_date, account_id]
+  columns:
+    - {name: usage_date, type: Date}
+    - {name: account_id, type: String}
+    - {name: account_name, type: String}
+    - {name: plan, type: LowCardinality(String)}
+    - {name: active_users, type: UInt32}
+    - {name: sessions, type: UInt32}
+    - {name: api_calls, type: UInt64}
+    - {name: storage_gb, type: Float64}
+
+retry:
+  max_attempts: 3
+  initial_delay_seconds: 5
+
+schedule:
+  enabled: true
+  cron: "30 6 * * *"          # daily 06:30
+  timezone: Asia/Kolkata

@@ -1,0 +1,68 @@
+# Scenario 1 - Weekly Sales Report
+# Log in, open the "Sales Report" dashboard, download the Weekly Sales card as CSV,
+# apply types and load into analytics.sales_metrics.
+name: weekly_sales
+description: >-
+  Daily sales per region and product for the previous ISO week, exported as CSV
+  from the Sales Report dashboard.
+
+source:
+  platform: metabase
+  base_url: ${METABASE_URL}
+  credentials:
+    username: ${METABASE_USERNAME}
+    password: ${METABASE_PASSWORD}
+  location:
+    collection: [Sales]
+    dashboard: Sales Report
+    card: Weekly Sales
+  export:
+    format: csv
+    formatted: false          # raw ISO dates / plain numbers instead of "September 14, 2026"
+
+browser:
+  headless: true
+  timeout_ms: 30000
+  download_timeout_ms: 120000
+  screenshot_on_failure: true
+  trace: on_failure
+
+ingestion:
+  expected_columns: [Date, Region, Product, Category, Orders, Units Sold, Revenue]
+  transforms:
+    - normalize_columns                              # "Units Sold" -> units_sold
+    - rename: {columns: {date: report_date}}
+    - strip_whitespace                               # " Vista 27\" Monitor" -> "Vista 27\" Monitor"
+    - change_case: {columns: [category], style: title}  # "audio " / "displays" -> "Audio" / "Displays"
+    - drop_duplicates
+  quality:
+    on_invalid_rows: quarantine
+    max_invalid_ratio: 0.02
+    rules:
+      - {column: revenue, min: 0}
+      - {column: orders, min: 1}
+      - {column: region, allowed: [North, South, East, West]}
+
+destination:
+  database: analytics
+  table: sales_metrics
+  partition_by: toYYYYMM(report_date)
+  order_by: [report_date, region, product]
+  columns:
+    - {name: report_date, type: Date, comment: Day of the sale}
+    - {name: region, type: LowCardinality(String)}
+    - {name: product, type: String}
+    - {name: category, type: LowCardinality(String)}
+    - {name: orders, type: UInt32}
+    - {name: units_sold, type: UInt32}
+    - {name: revenue, type: "Decimal(18, 2)", comment: Net revenue after discounts (USD)}
+
+retry:
+  max_attempts: 3
+  initial_delay_seconds: 5
+  backoff_multiplier: 2
+
+schedule:
+  enabled: true
+  cron: "0 8 * * 1"          # every Monday 08:00 - the previous week is complete
+  timezone: Asia/Kolkata

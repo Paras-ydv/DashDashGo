@@ -1,0 +1,69 @@
+# Scenario 3 - Monthly Financial Data
+# Log in, open the Finance Archive, download "Q4 Budget Review" as JSON, parse the
+# nested `details` structure, flatten it and load into analytics.finance_data.
+name: q4_budget_review
+description: >-
+  FY2025 Q4 budget vs. actuals per department and cost center from the Finance
+  Archive, exported as JSON with nested owner / approval / forecast details.
+
+source:
+  platform: metabase
+  base_url: ${METABASE_URL}
+  credentials:
+    username: ${METABASE_USERNAME}
+    password: ${METABASE_PASSWORD}
+  location:
+    collection: [Finance Archive]
+    question: Q4 Budget Review
+  export:
+    format: json
+
+ingestion:
+  expected_columns:
+    [line_id, fiscal_quarter, period_month, department, cost_center, category, budget, actual, details]
+  transforms:
+    - parse_json: {columns: [details]}     # jsonb arrives as JSON-encoded text
+    - flatten: {columns: [details]}        # details.owner.name -> details_owner_name
+    - rename:
+        columns:
+          budget: budget_amount
+          actual: actual_amount
+          details_owner_name: owner_name
+          details_owner_email: owner_email
+          details_approval_status: approval_status
+          details_approval_approved_by: approved_by
+          details_approval_approved_at: approved_at
+          details_forecast_next_quarter: forecast_next_quarter
+          details_forecast_currency: currency
+    - compute: {columns: {variance_amount: "actual_amount - budget_amount"}}
+  quality:
+    on_invalid_rows: fail                  # financial data: any bad row stops the load
+    rules:
+      - {column: budget_amount, min: 0}
+      - {column: approval_status, allowed: [approved, pending, rejected]}
+      - {column: currency, allowed: [USD]}
+
+destination:
+  database: analytics
+  table: finance_data
+  order_by: [fiscal_quarter, department, line_id]
+  columns:
+    - {name: line_id, type: String}
+    - {name: fiscal_quarter, type: LowCardinality(String)}
+    - {name: period_month, type: Date}
+    - {name: department, type: LowCardinality(String)}
+    - {name: cost_center, type: String}
+    - {name: category, type: LowCardinality(String)}
+    - {name: budget_amount, type: "Decimal(14, 2)"}
+    - {name: actual_amount, type: "Nullable(Decimal(14, 2))", comment: NULL until actuals are booked}
+    - {name: variance_amount, type: "Nullable(Decimal(14, 2))", comment: actual - budget}
+    - {name: forecast_next_quarter, type: "Decimal(14, 2)"}
+    - {name: currency, type: LowCardinality(String)}
+    - {name: owner_name, type: String}
+    - {name: owner_email, type: String}
+    - {name: approval_status, type: LowCardinality(String)}
+    - {name: approved_by, type: Nullable(String)}
+    - {name: approved_at, type: "Nullable(DateTime('UTC'))"}
+
+schedule:
+  enabled: false               # archived quarter: run on demand
