@@ -49,6 +49,10 @@ logs: ## Follow the app logs
 run: ## Run one pipeline now in the app container: make run REPORT=customer_usage
 	$(COMPOSE) exec app dashdashgo run $(REPORT)
 
+.PHONY: export-reports
+export-reports: ## Copy the (UI-edited) report configs from the container to ./reports
+	$(COMPOSE) cp app:/data/reports/. ./reports/
+
 .PHONY: validate
 validate: ## Validate every report config
 	$(COMPOSE) exec app dashdashgo validate

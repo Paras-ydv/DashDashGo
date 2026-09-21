@@ -112,8 +112,9 @@ services:
       - "127.0.0.1:${APP_PORT:-8000}:8000"
     volumes:
       - app-storage:/data/storage
-      # Report configs are read on every run: edit them without rebuilding.
-      - ./reports:/app/reports:ro
+      # Editable report configs (UI editor / `dashdashgo config`), seeded from
+      # ./reports on first start and re-read on every run.
+      - app-reports:/data/reports
     init: true          # reap orphaned browser processes
     shm_size: "1gb"     # Chromium needs more than Docker's 64 MB default /dev/shm
     restart: unless-stopped
@@ -122,3 +123,4 @@ volumes:
   clickhouse-data:
   postgres-data:
   app-storage:
+  app-reports:

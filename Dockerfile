@@ -30,16 +30,19 @@ RUN playwright install --with-deps chromium \
 COPY README.md ./
 COPY src ./src
 RUN uv sync --frozen --no-dev --group test
-COPY reports ./reports
 COPY demo ./demo
 COPY tests ./tests
+COPY reports ./reports
 
+# Report configs live on a volume at /data/reports so they can be edited from the
+# UI/CLI and survive restarts. Docker seeds a new named volume from this directory.
 RUN useradd --create-home --uid 10001 dashdashgo \
     && mkdir -p /data/storage \
+    && cp -r /app/reports /data/reports \
     && chown -R dashdashgo:dashdashgo /data
 USER dashdashgo
 
-ENV REPORTS_DIR=/app/reports \
+ENV REPORTS_DIR=/data/reports \
     STORAGE_ROOT=/data/storage \
     API_PORT=8000 \
     PYTEST_ADDOPTS="-p no:cacheprovider"
