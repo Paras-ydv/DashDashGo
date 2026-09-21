@@ -103,7 +103,7 @@ The assignment's three scenarios, fully automated against a local Metabase:
 - **Pipeline management in the UI:** create, edit (live validation, errors mapped to lines), duplicate, version history and restore, and archive, with conflict protection and a guarantee that secrets stay in environment variables.
 - **A complete CLI:** everything the UI does, plus per-run overrides (`--set key=value`, `--headed`, `--no-retry`, `--config FILE`).
 - **UI and API:** an operations UI (overview, pipeline page, run history, run detail with timeline, screenshots, logs and retry) and a JSON API that serves ingested data as JSON or CSV.
-- **Quality gates:** 159 unit tests, 8 ClickHouse integration tests and 9 end-to-end tests, plus `ruff` and `mypy --strict`, all run by GitHub Actions CI.
+- **Quality gates:** 162 unit tests, 8 ClickHouse integration tests and 9 end-to-end tests, plus `ruff` and `mypy --strict`, all run by GitHub Actions CI.
 
 ---
 
@@ -543,7 +543,11 @@ failures/<report>/<date>/<run_id>/attempt1_trace.zip                Playwright t
 failures/<report>/<date>/<run_id>/rejected_rows.csv                 quarantined rows with reasons
 ```
 
-The UI shows screenshots inline on the run page. Open a trace with
+The UI shows screenshots on the run page; clicking one opens an in-page viewer (arrows
+between attempts, Esc to close). If the browser never rendered anything (for example when the
+dashboard host is unreachable), a blank screenshot would be useless evidence, so DashDashGo
+draws a "The page did not load" card with the step, attempt, URLs and error into the
+browser and screenshots that instead. Open a trace with
 `npx playwright show-trace attempt1_trace.zip`.
 
 ### Logs
@@ -682,8 +686,11 @@ incrementally (the run log) can be uploaded when they close.
 
 ## Testing and CI
 
+A step-by-step **manual test script**, with the expected result for every feature and failure
+mode, is in [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
+
 ```bash
-make test              # unit tests (159): no infrastructure needed, about 3 s
+make test              # unit tests (162): no infrastructure needed, about 3 s
 make test-integration  # Python <-> ClickHouse (8): needs the stack running
 make test-e2e          # Metabase -> Playwright -> ClickHouse (9), inside the app container
 make test-all          # everything, inside the app container
