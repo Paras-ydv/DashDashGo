@@ -20,6 +20,7 @@
     </nav>
     <nav class="nav nav-reports" aria-label="Pipelines">
       <div class="nav-title">Pipelines</div>
+      <a href="/reports/new" {% if page == "new" %}aria-current="page"{% endif %}>{{ icon("add") }}New pipeline</a>
       {% for name in nav_reports %}
       <a href="/reports/{{ name }}" {% if page == name %}aria-current="page"{% endif %}>{{ icon("pipe") }}<span class="mono">{{ name }}</span></a>
       {% endfor %}

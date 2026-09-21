@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% from "macros.html" import icon %}
+{% block title %}{{ "New pipeline" if mode == "new" else "Edit " ~ name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <div class="crumbs"><a href="/">Pipelines</a> /
+      {% if mode == "new" %}New{% else %}<a href="/reports/{{ name }}">{{ name }}</a> / Configuration{% endif %}</div>
+    <h1>{% if mode == "new" %}New pipeline{% else %}Edit <span class="mono">{{ name }}</span>{% endif %}</h1>
+    <p>{% if mode == "new" %}Describe the dashboard report, how to clean it and where it lands. Nothing is created until the configuration validates.
+       {% else %}Changes are validated before saving, apply to the next run, and the previous version is kept in the history.{% endif %}</p>
+  </div>
+  <div class="actions">
+    {% if mode == "edit" %}<button class="btn" type="button" data-archive>Archive</button>{% endif %}
+    <button class="btn" type="button" data-validate>{{ icon("check") }}Validate</button>
+    <button class="btn btn-primary" type="button" data-save>{{ "Create pipeline" if mode == "new" else "Save" }}</button>
+  </div>
+</div>
+
+<div class="editor-layout" id="config-editor"
+     data-mode="{{ mode }}" data-name="{{ name }}" data-version="{{ config_version }}">
+  <section class="card editor-card">
+    <div class="card-head">
+      {% if mode == "new" %}
+      <div class="new-fields">
+        <label>Name <input class="text-input mono" name="report-name" placeholder="e.g. monthly_revenue"
+          pattern="[a-z][a-z0-9_]{1,62}" autocomplete="off" required></label>
+        <label>Start from
+          <select name="template">
+            <option value="">Blank template</option>
+            {% for n in nav_reports %}<option value="{{ n }}" {% if n == source %}selected{% endif %}>Copy of {{ n }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      {% else %}
+      <div><h2 class="mono">reports/{{ name }}.yaml</h2><p>Version {{ config_version }} · saved {{ modified_at|ago }}</p></div>
+      {% endif %}
+      <span class="editor-state muted" data-state>Unchanged</span>
+    </div>
+    <div class="editor">
+      <pre class="gutter" aria-hidden="true" data-gutter></pre>
+      <textarea spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"
+        aria-label="Report configuration (YAML)" data-yaml>{{ yaml_text }}</textarea>
+    </div>
+  </section>
+
+  <aside class="stack">
+    <section class="card">
+      <div class="card-head"><h2>Validation</h2></div>
+      <div class="card-body validation" data-result>
+        <p class="muted">Validation runs as you type. It checks structure, types, cron, transforms, rules and that every <code>${ENV_VAR}</code> exists.</p>
+      </div>
+    </section>
+
+    {% if mode == "edit" %}
+    <section class="card">
+      <div class="card-head"><div><h2>History</h2><p>Previous versions, newest first. Loading one does not save it.</p></div></div>
+      {% if history %}
+      <ul class="artifact-list">
+        {% for v in history[:15] %}
+        <li><span>{{ v.saved_at|utc }}</span><button class="btn btn-sm" type="button" data-load-version="{{ v.id }}">Load</button></li>
+        {% endfor %}
+      </ul>
+      {% else %}<div class="empty">No earlier versions yet.</div>{% endif %}
+    </section>
+    {% endif %}
+
+    <section class="card">
+      <div class="card-head"><h2>Reference</h2></div>
+      <div class="card-body">
+        <dl class="kv">
+          <dt>Secrets</dt><dd>Only as <code>${ENV_VAR}</code>; plaintext passwords are rejected.</dd>
+          <dt>Formats</dt><dd><code>csv</code> · <code>xlsx</code> · <code>json</code></dd>
+          <dt>Transforms</dt><dd>{% for t in transforms %}<code title="{{ t.summary }}">{{ t.name }}</code>{{ ", " if not loop.last }}{% endfor %}</dd>
+          <dt>Types</dt><dd><code>String</code>, <code>(U)Int8–64</code>, <code>Float64</code>, <code>Decimal(P,S)</code>, <code>Bool</code>, <code>Date</code>, <code>DateTime64(3,'UTC')</code>, <code>Nullable(…)</code>, <code>LowCardinality(…)</code></dd>
+          <dt>Shortcuts</dt><dd><kbd>⌘/Ctrl</kbd>+<kbd>S</kbd> save · <kbd>Tab</kbd> indent</dd>
+        </dl>
+      </div>
+    </section>
+  </aside>
+</div>
+<script src="/static/editor.js"></script>
+{% endblock %}

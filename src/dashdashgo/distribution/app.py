@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from dashdashgo import __version__
 from dashdashgo.container import Container, build_container
-from dashdashgo.distribution import api, ui
+from dashdashgo.distribution import api, config_api, ui
 from dashdashgo.distribution.state import AppState
 from dashdashgo.errors import DashDashGoError
 from dashdashgo.scheduling.scheduler import ReportScheduler
@@ -76,6 +76,7 @@ def create_app(
         lifespan=lifespan,
     )
     app.include_router(api.router)
+    app.include_router(config_api.router)
     app.include_router(ui.router)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
     return app

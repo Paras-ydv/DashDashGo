@@ -8,7 +8,10 @@
     <h1>Overview</h1>
     <p>Pipelines that acquire dashboard reports, validate them and load them into ClickHouse. Figures cover the last {{ stats.window_days }} days.</p>
   </div>
-  {% if live %}<span class="live-dot">Live · updating</span>{% endif %}
+  <div class="actions">
+    {% if live %}<span class="live-dot">Live · updating</span>{% endif %}
+    <a class="btn" href="/reports/new">{{ icon("add") }}New pipeline</a>
+  </div>
 </div>
 
 <section class="tiles" aria-label="Last {{ stats.window_days }} days">
@@ -58,8 +61,9 @@
       </tr>
       {% endfor %}
       {% for name, error in invalid.items() %}
-      <tr><td class="mono">{{ name }}</td><td colspan="6"><span class="pill pill-failed">{{ icon("x") }}Invalid config</span>
-        <div class="error-text" title="{{ error.message }}">{{ error.message }}</div></td></tr>
+      <tr><td class="mono">{{ name }}</td><td colspan="5"><span class="pill pill-failed">{{ icon("x") }}Invalid config</span>
+        <div class="error-text" title="{{ error.message }}">{{ error.message }}</div></td>
+        <td class="num"><a class="btn btn-sm" href="/reports/{{ name }}/edit">{{ icon("edit") }}Fix</a></td></tr>
       {% endfor %}
       </tbody>
     </table></div>

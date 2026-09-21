@@ -7,8 +7,6 @@ it completes. Actions (run, retry) call the JSON API from the browser.
 
 from __future__ import annotations
 
-import math
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,64 +25,23 @@ from dashdashgo.distribution.views import (
     status_state,
 )
 from dashdashgo.errors import DashDashGoError
+from dashdashgo.ingestion.transforms import TRANSFORMS
 from dashdashgo.metadata.models import ReportStats, RunRecord, RunStatus
+from dashdashgo.utils.formatting import fmt_ago, fmt_bytes, fmt_count, fmt_duration, fmt_time
 from dashdashgo.warehouse.ddl import create_table_sql
 
 router = APIRouter(include_in_schema=False)
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
 
-# --- formatting helpers exposed to templates --------------------------------------
-
-
-def fmt_duration(ms: float | None) -> str:
-    if ms is None:
-        return "—"
-    seconds = ms / 1000
-    if seconds < 1:
-        return f"{int(ms)} ms"
-    if seconds < 60:
-        return f"{seconds:.1f} s"
-    minutes, secs = divmod(int(seconds), 60)
-    return f"{minutes}m {secs:02d}s"
-
-
-def fmt_count(value: float | None) -> str:
-    if value is None:
-        return "—"
-    for limit, suffix in ((1e9, "B"), (1e6, "M"), (1e4, "K")):
-        if abs(value) >= limit:
-            return f"{value / limit:.1f}{suffix}"
-    return f"{int(value):,}"
-
-
-def fmt_bytes(size: int) -> str:
-    units = ["B", "KB", "MB", "GB"]
-    power = min(int(math.log(size, 1024)) if size > 0 else 0, len(units) - 1)
-    return f"{size / 1024**power:.1f} {units[power]}" if power else f"{size} B"
-
-
-def fmt_ago(moment: datetime | None) -> str:
-    if moment is None:
-        return "never"
-    delta = (datetime.now(UTC) - moment).total_seconds()
-    future = delta < 0
-    delta = abs(delta)
-    for unit, seconds in (("d", 86400), ("h", 3600), ("m", 60)):
-        if delta >= seconds:
-            amount = f"{int(delta // seconds)}{unit}"
-            return f"in {amount}" if future else f"{amount} ago"
-    return "in <1m" if future else "just now"
-
-
-def fmt_time(moment: datetime | None) -> str:
-    return moment.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S UTC") if moment else "—"
-
-
 templates.env.filters.update(
     duration=fmt_duration, count=fmt_count, bytes=fmt_bytes, ago=fmt_ago, utc=fmt_time
 )
-templates.env.globals.update(status_state=status_state, version=__version__)
+templates.env.globals.update(
+    status_state=status_state,
+    version=__version__,
+    transforms=sorted(TRANSFORMS.values(), key=lambda t: t.name),
+)
 
 
 def _render(request: Request, template: str, **context: Any) -> HTMLResponse:
@@ -132,6 +89,49 @@ def overview(request: Request) -> HTMLResponse:
         live=live,
         scheduled=sum(1 for r in reports if r["config"].schedule.enabled and r["config"].enabled),
         page="overview",
+    )
+
+
+@router.get("/reports/new", response_class=HTMLResponse)
+def new_report_page(request: Request, source: str | None = None) -> HTMLResponse:
+    state = get_state(request)
+    store = state.container.config_store
+    try:
+        text = store.template("new_report", source)
+    except DashDashGoError as exc:
+        raise HTTPException(404, exc.message) from exc
+    return _render(
+        request,
+        "config_edit.html",
+        mode="new",
+        name="",
+        yaml_text=text,
+        config_version="",
+        history=[],
+        source=source or "",
+        page="new",
+    )
+
+
+@router.get("/reports/{name}/edit", response_class=HTMLResponse)
+def edit_report_page(request: Request, name: str) -> HTMLResponse:
+    state = get_state(request)
+    store = state.container.config_store
+    try:
+        document = store.read(name)
+        history = store.history(name)
+    except DashDashGoError as exc:
+        raise HTTPException(404, exc.message) from exc
+    return _render(
+        request,
+        "config_edit.html",
+        mode="edit",
+        name=name,
+        yaml_text=document.text,
+        config_version=document.version,
+        modified_at=document.modified_at,
+        history=history,
+        page=name,
     )
 
 

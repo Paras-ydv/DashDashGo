@@ -17,6 +17,8 @@
     </div>
   </div>
   <div class="actions">
+    <a class="btn" href="/reports/{{ name }}/edit">{{ icon("edit") }}Edit config</a>
+    <a class="btn" href="/reports/new?source={{ name }}">Duplicate</a>
     <button class="btn" type="button" data-run-report="{{ name }}" data-force="1"
       title="Load even if identical data was already ingested">{{ icon("retry") }}Force reload</button>
     <button class="btn btn-primary" type="button" data-run-report="{{ name }}">{{ icon("play") }}Run now</button>
@@ -112,7 +114,7 @@
 
   <div class="grid-2">
     <details class="card section">
-      <summary class="card-head"><div><h2>Configuration</h2><p>reports/{{ name }}.yaml, resolved; secrets masked</p></div>{{ icon("chevron", "chev") }}</summary>
+      <summary class="card-head"><div><h2>Configuration</h2><p>reports/{{ name }}.yaml, resolved; secrets masked · <a href="/reports/{{ name }}/edit">edit</a></p></div>{{ icon("chevron", "chev") }}</summary>
       <pre class="code">{{ config_yaml }}</pre>
     </details>
     <details class="card section">
