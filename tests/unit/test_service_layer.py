@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from dashdashgo.config.loader import ReportRegistry
 from dashdashgo.config.models import ReportConfig
+from dashdashgo.config.store import ConfigStore
 from dashdashgo.container import Container
 from dashdashgo.distribution.app import create_app
 from dashdashgo.distribution.views import build_timeline
@@ -41,7 +42,9 @@ class FakeOrchestrator:
         self.gate = gate
         self.calls: list[tuple[str, bool]] = []
 
-    def run(self, report: ReportConfig, run: RunRecord, *, force: bool = False) -> RunResult:
+    def run(
+        self, report: ReportConfig, run: RunRecord, *, force: bool = False, overrides: Any = ()
+    ) -> RunResult:
         self.calls.append((run.run_id, force))
         if self.gate:
             self.gate.wait(5)
@@ -211,20 +214,30 @@ class FakeClickHouse:
         return True
 
 
+class FakeLoader:
+    """Pretends the destination table does not exist yet (no drift to report)."""
+
+    def schema_drift(self, destination: Any) -> list[str] | None:
+        return None
+
+
 @pytest.fixture
 def client(
     reports_dir: Path, tmp_path: Path
 ) -> Iterator[tuple[TestClient, InMemoryRunRepository, LocalStorage]]:
     service, runs, _ = make_service(reports_dir, tmp_path)
     storage = LocalStorage(tmp_path / "storage")
+    registry = ReportRegistry(reports_dir, TEST_ENV)
     container = Container(
         settings=Settings(),
         clickhouse=FakeClickHouse(),  # type: ignore[arg-type]
-        registry=ReportRegistry(reports_dir, TEST_ENV),
+        registry=registry,
         storage=storage,
         runs=runs,
         data_reader=None,  # type: ignore[arg-type]
         run_service=service,
+        config_store=ConfigStore(registry),
+        loader=FakeLoader(),  # type: ignore[arg-type]
     )
     app = create_app(Settings(), container=container, scheduler=False)
     with TestClient(app) as test_client:

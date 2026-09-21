@@ -10,7 +10,7 @@ from __future__ import annotations
 import fcntl
 import logging
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -72,9 +72,15 @@ class RunService:
         self._active: set[str] = set()
 
     def _prepare(
-        self, name: str, trigger: Trigger, parent_run_id: str | None
+        self,
+        name: str,
+        trigger: Trigger,
+        parent_run_id: str | None,
+        overrides: Sequence[str] = (),
+        config: ReportConfig | None = None,
     ) -> tuple[ReportConfig, RunRecord]:
-        report = self._registry.load(name)  # raises ConfigurationError before anything starts
+        # Raises ConfigurationError before anything starts.
+        report = config or self._registry.load(name, overrides)
         if not report.enabled and trigger is Trigger.SCHEDULE:
             raise ConfigurationError(f"report '{name}' is disabled")
         run = RunRecord(
@@ -88,11 +94,13 @@ class RunService:
         )
         return report, run
 
-    def _execute(self, report: ReportConfig, run: RunRecord, force: bool) -> RunResult:
+    def _execute(
+        self, report: ReportConfig, run: RunRecord, force: bool, overrides: Sequence[str] = ()
+    ) -> RunResult:
         with log_context(run_id=run.run_id, report=report.name):
             try:
                 with self._lock.hold(report.name):
-                    return self._orchestrator.run(report, run, force=force)
+                    return self._orchestrator.run(report, run, force=force, overrides=overrides)
             except ConcurrentRunError as exc:
                 failed = run.model_copy(
                     update={
@@ -117,11 +125,18 @@ class RunService:
         trigger: Trigger = Trigger.CLI,
         force: bool = False,
         parent_run_id: str | None = None,
+        overrides: Sequence[str] = (),
+        config: ReportConfig | None = None,
     ) -> RunResult:
-        """Run in the calling thread and return the finished run."""
-        report, run = self._prepare(name, trigger, parent_run_id)
+        """Run in the calling thread and return the finished run.
+
+        ``overrides`` (``key.path=value``) adjust the configured report for this
+        run only; ``config`` runs an already-loaded config (e.g. a file outside
+        the reports directory) instead of looking ``name`` up.
+        """
+        report, run = self._prepare(name, trigger, parent_run_id, overrides, config)
         self._runs.save_run(run)
-        return self._execute(report, run, force)
+        return self._execute(report, run, force, overrides)
 
     def submit(
         self,

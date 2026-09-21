@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -46,7 +45,7 @@ class LocalStorage(StorageBackend):
             target.parent.mkdir(parents=True, exist_ok=True)
             tmp = target.with_name(f".{target.name}.tmp")
             tmp.write_bytes(data)
-            os.replace(tmp, target)  # atomic: readers never see a half-written file
+            tmp.replace(target)  # atomic: readers never see a half-written file
         except OSError as exc:
             raise StorageError(f"cannot write {key}: {exc}") from exc
         return self._stored(key, target)

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from dashdashgo.acquisition.service import AcquisitionService
 from dashdashgo.config.loader import ReportRegistry
+from dashdashgo.config.store import ConfigStore
 from dashdashgo.ingestion.service import IngestionService
 from dashdashgo.metadata.repository import ClickHouseRunRepository, RunRepository
 from dashdashgo.observability.logging import redactor
@@ -31,6 +32,8 @@ class Container:
     runs: RunRepository
     data_reader: ReportDataReader
     run_service: RunService
+    config_store: ConfigStore
+    loader: WarehouseLoader
 
 
 def build_container(settings: Settings) -> Container:
@@ -39,10 +42,11 @@ def build_container(settings: Settings) -> Container:
     storage = LocalStorage(settings.storage_root)
     runs = ClickHouseRunRepository(clickhouse, settings.clickhouse_metadata_database)
     registry = ReportRegistry(settings.reports_dir)
+    loader = WarehouseLoader(clickhouse)
     orchestrator = PipelineOrchestrator(
         acquisition=AcquisitionService(storage),
         ingestion=IngestionService(),
-        loader=WarehouseLoader(clickhouse),
+        loader=loader,
         runs=runs,
         storage=storage,
     )
@@ -61,4 +65,6 @@ def build_container(settings: Settings) -> Container:
         runs=runs,
         data_reader=ReportDataReader(clickhouse),
         run_service=run_service,
+        config_store=ConfigStore(registry),
+        loader=loader,
     )

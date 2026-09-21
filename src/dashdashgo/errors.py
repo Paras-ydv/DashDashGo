@@ -34,11 +34,25 @@ class DashDashGoError(Exception):
 
 
 class ConfigurationError(DashDashGoError):
+    """Invalid configuration. ``problems`` lists (location, message) pairs, e.g.
+    ``("retry.max_attempts", "Input should be greater than or equal to 1")``,
+    so editors can point at the exact field."""
+
     stage = "config"
+
+    def __init__(self, message: str, *, problems: list[tuple[str, str]] | None = None) -> None:
+        super().__init__(message)
+        self.problems = problems or []
 
 
 class ReportNotConfiguredError(ConfigurationError):
     """The requested report has no configuration file."""
+
+
+class ConfigConflictError(DashDashGoError):
+    """A config changed on disk since it was opened, or a new name is already taken."""
+
+    stage = "config"
 
 
 # --- acquisition --------------------------------------------------------------

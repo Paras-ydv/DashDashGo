@@ -35,8 +35,19 @@ class WarehouseLoader:
             self._ch.command(create_table_sql(destination))
             log.info("Created table %s", destination.qualified_table)
             return "created"
-        self._check_drift(destination, actual)
+        if problems := self._drift(destination, actual):
+            raise SchemaMismatchError(
+                f"{destination.qualified_table} does not match its configured schema: "
+                + "; ".join(problems)
+                + ". Migrate the table (ALTER TABLE) or update the report config."
+            )
         return "verified"
+
+    def schema_drift(self, destination: DestinationConfig) -> list[str] | None:
+        """Read-only drift check: ``None`` if the table does not exist yet, else the
+        differences between the live table and the config (empty = compatible)."""
+        actual = self._table_columns(destination)
+        return self._drift(destination, actual) if actual else None
 
     def _table_columns(self, destination: DestinationConfig) -> dict[str, str]:
         rows = self._ch.query_rows(
@@ -46,7 +57,8 @@ class WarehouseLoader:
         )
         return {row["name"]: row["type"] for row in rows}
 
-    def _check_drift(self, destination: DestinationConfig, actual: dict[str, str]) -> None:
+    @staticmethod
+    def _drift(destination: DestinationConfig, actual: dict[str, str]) -> list[str]:
         expected = dict(expected_columns(destination))
         problems = [f"missing column {name}" for name in expected if name not in actual]
         problems += [f"unexpected column {name}" for name in actual if name not in expected]
@@ -55,12 +67,7 @@ class WarehouseLoader:
             for name, ctype in expected.items()
             if name in actual and normalize_type(actual[name]) != normalize_type(ctype)
         ]
-        if problems:
-            raise SchemaMismatchError(
-                f"{destination.qualified_table} does not match its configured schema: "
-                + "; ".join(problems)
-                + ". Migrate the table (ALTER TABLE) or update the report config."
-            )
+        return problems
 
     def load(
         self,

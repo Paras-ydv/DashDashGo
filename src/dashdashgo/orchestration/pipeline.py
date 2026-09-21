@@ -13,6 +13,7 @@ import io
 import json
 import logging
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,7 +58,14 @@ class PipelineOrchestrator:
         self._runs = runs
         self._storage = storage
 
-    def run(self, report: ReportConfig, run: RunRecord, *, force: bool = False) -> RunResult:
+    def run(
+        self,
+        report: ReportConfig,
+        run: RunRecord,
+        *,
+        force: bool = False,
+        overrides: Sequence[str] = (),
+    ) -> RunResult:
         redactor.register(report.source.credentials.password.get_secret_value())
         tracker = RunTracker(self._runs, run)
         with (
@@ -69,6 +77,8 @@ class PipelineOrchestrator:
                 self._storage.writer(ctx.artifacts.key("logs", "run.log")) as log_path,
                 run_log_file(log_path, run.run_id),
             ):
+                if overrides:
+                    log.info("Config overrides for this run: %s", ", ".join(overrides))
                 self._execute(report, ctx, tracker)
             self._write_summary(ctx, tracker.run)
         return RunResult(tracker.run)
