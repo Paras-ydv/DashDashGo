@@ -9,7 +9,6 @@ quality stage can reject/quarantine that row according to policy.
 from __future__ import annotations
 
 import math
-import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
@@ -22,25 +21,17 @@ import pandas as pd
 from dashdashgo.columns import ColumnType, Kind
 from dashdashgo.config.models import ColumnSpec
 from dashdashgo.errors import TransformationError
-from dashdashgo.ingestion.frames import is_missing
+from dashdashgo.ingestion.frames import clean_number, is_missing
 
 # ClickHouse `Date` is stored as days since epoch in UInt16; values outside this
 # range are silently wrapped by the server, so reject them here instead.
 DATE_MIN, DATE_MAX = date(1970, 1, 1), date(2149, 6, 6)
 DATE32_MIN, DATE32_MAX = date(1900, 1, 1), date(2299, 12, 31)
 
-_NUMERIC_NOISE = re.compile(r"[\s,_$€£₹]")
 _TRUE = {"true", "t", "yes", "y", "1"}
 _FALSE = {"false", "f", "no", "n", "0"}
 
 Converter = Callable[[Any], Any]
-
-
-def _clean_number(text: str) -> str:
-    cleaned = _NUMERIC_NOISE.sub("", text.strip())
-    if cleaned.startswith("(") and cleaned.endswith(")"):  # accounting negatives: (12.50)
-        cleaned = "-" + cleaned[1:-1]
-    return cleaned
 
 
 def _to_decimal(value: Any) -> Decimal:
@@ -56,7 +47,7 @@ def _to_decimal(value: Any) -> Decimal:
         return Decimal(repr(value))
     if isinstance(value, str):
         try:
-            result = Decimal(_clean_number(value))
+            result = Decimal(clean_number(value))
         except InvalidOperation:
             raise ValueError("not a number") from None
         if not result.is_finite():

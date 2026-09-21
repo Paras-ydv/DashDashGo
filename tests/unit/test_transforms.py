@@ -162,3 +162,18 @@ def test_describe_is_compact() -> None:
     step = parse_transform_step({"rename": {"columns": {"date": "report_date"}}})
     assert step.describe() == "rename(date→report_date)"
     assert parse_transform_step("normalize_columns").describe() == "normalize_columns"
+
+
+def test_parse_numbers_handles_formatted_exports() -> None:
+    from decimal import Decimal
+
+    out = run(
+        pd.DataFrame({"spend": ["$1,234.56", "(12.50)", None], "clicks": ["12,345", "7", "0"]}),
+        {"parse_numbers": {"columns": ["spend", "clicks"]}},
+        {"compute": {"columns": {"cpc": "spend / clicks"}}},
+    )
+    assert out["spend"].tolist() == [Decimal("1234.56"), Decimal("-12.50"), None]
+    assert out["clicks"].tolist() == [Decimal("12345"), Decimal("7"), Decimal("0")]
+    assert out["cpc"].tolist()[0] == pytest.approx(0.1, rel=1e-3)
+    with pytest.raises(TransformationError, match="non-number"):
+        run(pd.DataFrame({"x": ["n/a"]}), {"parse_numbers": {"columns": ["x"]}})

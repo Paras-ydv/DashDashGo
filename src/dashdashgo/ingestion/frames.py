@@ -10,6 +10,7 @@ and makes every transform behave the same regardless of the source format.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -39,3 +40,14 @@ def map_cells(series: pd.Series, fn: Callable[[Any], Any]) -> pd.Series:
     a string column with NaN), which would break the "None means null" contract.
     """
     return pd.Series([fn(v) for v in series.tolist()], index=series.index, dtype=object)
+
+
+_NUMERIC_NOISE = re.compile(r"[\s,_$€£₹]")
+
+
+def clean_number(text: str) -> str:
+    """Strip formatting from a numeric string: "$1,234.50" -> "1234.50", "(12.50)" -> "-12.50"."""
+    cleaned = _NUMERIC_NOISE.sub("", text.strip())
+    if cleaned.startswith("(") and cleaned.endswith(")"):  # accounting negatives
+        cleaned = "-" + cleaned[1:-1]
+    return cleaned

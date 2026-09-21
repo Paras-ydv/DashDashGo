@@ -20,13 +20,14 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, ValidationError
 
 from dashdashgo.errors import TransformationError
-from dashdashgo.ingestion.frames import is_missing, map_cells
+from dashdashgo.ingestion.frames import clean_number, is_missing, map_cells
 
 
 class TransformOptions(BaseModel):
@@ -399,6 +400,27 @@ def pivot(frame: pd.DataFrame, options: PivotOptions) -> pd.DataFrame:
     wide = wide.reset_index()
     wide = wide.astype(object)
     return wide.where(wide.notna(), None)
+
+
+@transform("parse_numbers", SelectOptions)
+def parse_numbers(frame: pd.DataFrame, options: SelectOptions) -> pd.DataFrame:
+    """Turn formatted numbers ("$1,234.56", "12,345", "(3.50)") into exact Decimals."""
+    _require_columns(frame, options.columns, "parse_numbers")
+    out = frame.copy()
+    for column in options.columns:
+
+        def parse(value: Any, column: str = column) -> Any:
+            if not isinstance(value, str) or is_missing(value):
+                return value
+            try:
+                return Decimal(clean_number(value))
+            except InvalidOperation:
+                raise TransformationError(
+                    f"parse_numbers: column '{column}' holds a non-number: {value[:40]!r}"
+                ) from None
+
+        out[column] = map_cells(out[column], parse)
+    return out
 
 
 class ComputeOptions(TransformOptions):
