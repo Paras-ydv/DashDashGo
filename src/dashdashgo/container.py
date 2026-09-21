@@ -6,6 +6,7 @@ modules free of global state and lets tests swap any dependency.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from dashdashgo.acquisition.service import AcquisitionService
@@ -21,6 +22,8 @@ from dashdashgo.storage import LocalStorage, StorageBackend
 from dashdashgo.warehouse.client import ClickHouse
 from dashdashgo.warehouse.loader import WarehouseLoader
 from dashdashgo.warehouse.reader import ReportDataReader
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -68,3 +71,18 @@ def build_container(settings: Settings) -> Container:
         config_store=ConfigStore(registry),
         loader=loader,
     )
+
+
+def seed_bundled_reports(settings: Settings) -> list[str]:
+    """Copy newly shipped report configs into the (editable) reports directory."""
+    if settings.bundled_reports_dir is None:
+        return []
+    store = ConfigStore(ReportRegistry(settings.reports_dir))
+    try:
+        added = store.seed_bundled(settings.bundled_reports_dir)
+    except OSError as exc:
+        log.warning("Could not add bundled reports: %s", exc)
+        return []
+    if added:
+        log.info("Added bundled report configs: %s", ", ".join(added))
+    return added

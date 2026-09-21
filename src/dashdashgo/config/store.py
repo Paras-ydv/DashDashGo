@@ -34,6 +34,7 @@ from dashdashgo.errors import ConfigConflictError, ConfigurationError, ReportNot
 HISTORY_DIR = ".history"
 ARCHIVE_DIR = ".archive"
 MAX_HISTORY = 50
+SEEDED_MANIFEST = ".seeded"  # names of bundled reports already offered to this directory
 RESERVED_NAMES = {"new"}  # /reports/new is the UI's create page
 _SECRET_HINT = "secrets must reference an environment variable, e.g. ${METABASE_PASSWORD}"
 _SECRET_KEY = re.compile(r"(password|secret|token|api_?key)$", re.IGNORECASE)
@@ -204,6 +205,29 @@ class ConfigStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         path.replace(target)
         return str(target.relative_to(self._dir))
+
+    def seed_bundled(self, bundled_dir: Path) -> list[str]:
+        """Add reports shipped with the application that this directory has never had.
+
+        Add-only: an existing file is never overwritten, and a report that was
+        seeded once is never re-added (so archiving or deleting it sticks). This
+        lets new releases ship new reports into an existing, user-edited volume.
+        """
+        if not bundled_dir.is_dir() or bundled_dir.resolve() == self._dir.resolve():
+            return []
+        manifest = self._dir / SEEDED_MANIFEST
+        seeded = set(manifest.read_text().split()) if manifest.is_file() else set()
+        added = []
+        for source in sorted(bundled_dir.glob("*.yaml")):
+            if source.stem in seeded:
+                continue
+            target = self._dir / source.name
+            if not target.exists():
+                _write_atomic(target, source.read_text(encoding="utf-8"))
+                added.append(source.stem)
+            seeded.add(source.stem)
+        _write_atomic(manifest, "".join(f"{name}\n" for name in sorted(seeded)))
+        return added
 
     # --- history ------------------------------------------------------------------
 

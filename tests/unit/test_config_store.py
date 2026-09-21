@@ -118,3 +118,21 @@ def test_archive_keeps_the_file(store: ConfigStore, tmp_path: Path) -> None:
 def test_history_rejects_path_tricks(store: ConfigStore) -> None:
     with pytest.raises(ConfigurationError):
         store.read_version("weekly_sales", "../../weekly_sales")
+
+
+def test_seed_bundled_is_add_only_and_remembers(tmp_path: Path) -> None:
+    bundled, target = tmp_path / "bundled", tmp_path / "live"
+    shutil.copytree(REPORTS_DIR, bundled)
+    target.mkdir()
+    (target / "weekly_sales.yaml").write_text("# my edited version\n")
+    store = ConfigStore(ReportRegistry(target, TEST_ENV))
+
+    added = store.seed_bundled(bundled)
+    assert "weekly_sales" not in added  # never overwrites an existing (edited) file
+    assert (target / "weekly_sales.yaml").read_text() == "# my edited version\n"
+    assert set(added) == {p.stem for p in bundled.glob("*.yaml")} - {"weekly_sales"}
+
+    store.archive("customer_usage")
+    assert store.seed_bundled(bundled) == []  # archived reports are not re-added
+    (bundled / "brand_new.yaml").write_text((bundled / "weekly_sales.yaml").read_text())
+    assert store.seed_bundled(bundled) == ["brand_new"]  # but new releases' reports are

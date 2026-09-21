@@ -209,6 +209,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     settings = get_settings()
     configure_logging(args.log_level or settings.log_level, settings.log_format)
+    from dashdashgo.container import seed_bundled_reports
+
+    seed_bundled_reports(settings)
     try:
         code: int = args.func(args)
     except DashDashGoError as exc:

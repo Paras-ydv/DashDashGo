@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from dashdashgo import __version__
-from dashdashgo.container import Container, build_container
+from dashdashgo.container import Container, build_container, seed_bundled_reports
 from dashdashgo.distribution import api, config_api, ui
 from dashdashgo.distribution.state import AppState
 from dashdashgo.errors import DashDashGoError
@@ -53,6 +53,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        seed_bundled_reports(settings)
         _initialise_metadata(container)
         report_scheduler = None
         if run_scheduler:

@@ -35,14 +35,15 @@ COPY tests ./tests
 COPY reports ./reports
 
 # Report configs live on a volume at /data/reports so they can be edited from the
-# UI/CLI and survive restarts. Docker seeds a new named volume from this directory.
+# UI/CLI and survive restarts; reports shipped in /app/reports are added to it at
+# startup (add-only, never overwriting edits).
 RUN useradd --create-home --uid 10001 dashdashgo \
-    && mkdir -p /data/storage \
-    && cp -r /app/reports /data/reports \
+    && mkdir -p /data/storage /data/reports \
     && chown -R dashdashgo:dashdashgo /data
 USER dashdashgo
 
 ENV REPORTS_DIR=/data/reports \
+    BUNDLED_REPORTS_DIR=/app/reports \
     STORAGE_ROOT=/data/storage \
     API_PORT=8000 \
     PYTEST_ADDOPTS="-p no:cacheprovider"

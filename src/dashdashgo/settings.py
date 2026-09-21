@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     clickhouse_query_timeout_s: int = 300
 
     reports_dir: Path = Path("reports")
+    # Reports shipped with the image; new ones are added to reports_dir at startup.
+    bundled_reports_dir: Path | None = None
     storage_root: Path = Path("storage")
     storage_retention_days: int = Field(default=30, ge=0)
 
