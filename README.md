@@ -82,19 +82,25 @@ make run REPORT=weekly_sales        # again -> SKIPPED: identical data already l
 
 ## What's in the box
 
-The assignment's three scenarios, fully automated against a local Metabase:
+Eight pipelines run against a local Metabase: the assignment's three scenarios, plus five
+more that each exercise something different.
 
-| Pipeline | Dashboard action (Playwright) | File | Processing | Table |
+| Pipeline | Dashboard action (Playwright) | Stored as | Processing | Table |
 |---|---|---|---|---|
-| `weekly_sales` | Log in → *Sales* collection → *Sales Report* dashboard → card menu → Download CSV | `weekly_sales_*.csv` | normalise headers, trim, fix casing, type, validate | `analytics.sales_metrics` |
-| `customer_usage` | Log in → *Customer Usage* dashboard → **filter "Previous 7 days"** → Download XLSX | `daily_customer_usage_*.xlsx` | read sheet, **pivot** long → wide, validate | `analytics.daily_usage` |
-| `q4_budget_review` | Log in → *Finance Archive* collection → *Q4 Budget Review* → Download JSON | `q4_budget_review_*.json` | parse JSON, **flatten nested objects**, derive variance | `analytics.finance_data` |
+| `weekly_sales` | *Sales* → *Sales Report* dashboard → card menu → Download CSV | `Weekly_Sales.csv` | normalise headers, trim, fix casing, type, validate | `analytics.sales_metrics` |
+| `customer_usage` | *Customer Usage* dashboard → **clicks the Usage Date filter → "Previous 7 days"** → Download XLSX | `Customer_Usage_7Day.xlsx` | read sheet, **pivot** long → wide | `analytics.daily_usage` |
+| `q4_budget_review` | *Finance Archive* → *Q4 Budget Review* question → Download JSON | `Q4_Budget_Review.json` | parse JSON, **flatten nested objects**, derive variance | `analytics.finance_data` |
+| `support_tickets` | *Support Overview* dashboard → **date widget + multi-select Priority widget** (High, Urgent) → CSV | `Support_Tickets_<date>.csv` | nullable CSAT, rule proving the category filter applied | `analytics.support_tickets_daily` |
+| `marketing_campaigns` | *Marketing Performance* dashboard, filter via URL, **formatted** CSV export | `Marketing_Campaigns_30Day.csv` | parses `$1,234.56`, `12,345` and `September 14, 2026`; derives CTR and ROAS | `analytics.marketing_campaign_daily` |
+| `inventory_snapshot` | *Operations* → *Inventory Snapshot* question → JSON | `Inventory_<date>.json` | drops the report's TOTAL row, flattens supplier JSON, `Bool` reorder flag, **quarantines 2 corrupt rows** | `analytics.inventory_snapshot` |
+| `web_traffic_hourly` | *Hourly Web Traffic* question filtered to the last 48 hours → CSV | `Web_Traffic_<date>.csv` | `DateTime` hourly grain; overlapping windows deduplicated | `analytics.web_traffic_hourly` |
+| `mrr_monthly` | *Finance Archive* → *SaaS Metrics* dashboard → XLSX | `MRR_Movements_<date>.xlsx` | removes a duplicated export row, derives net new MRR; monthly cron | `analytics.mrr_monthly` |
 
 **Implemented:**
 
-- **Acquisition:** Playwright with no fixed sleeps. Login detects success vs. rejected credentials, navigation goes by name through collections, filters are verified after they're applied, the download is awaited, and the downloaded file is validated.
+- **Acquisition:** Playwright with no fixed sleeps. Login detects success vs. rejected credentials, and navigation goes by name through collections. Filters are applied by **operating the dashboard's filter widgets** (date shortcuts, the relative-date editor, multi-select category lists) or through URL parameters, and they're verified either way. The download is awaited, validated, and stored under a configurable file name.
 - **Formats:** readers for CSV (encoding and BOM handling, delimiter sniffing), XLSX (sheet selection) and JSON (records path, nested objects), behind a strategy interface.
-- **Transformation:** 12 declarative transform steps. Type coercion is driven by the ClickHouse schema, row-level quality rules can fail, drop or quarantine bad rows, and duplicate natural keys are rejected.
+- **Transformation:** 13 declarative transform steps. Type coercion is driven by the ClickHouse schema, row-level quality rules can fail, drop or quarantine bad rows, and duplicate natural keys are rejected.
 - **Loading:** report-specific ClickHouse tables are generated from config, schema drift is detected, inserts are batched with per-batch dedup tokens, and every load is verified.
 - **Reliability:** a typed error hierarchy classifies each error as retryable or not, with exponential backoff. Failure screenshots, redacted page HTML and optional Playwright traces are captured.
 - **Idempotency:** a content fingerprint skips repeat loads, and ReplacingMergeTree handles rows re-delivered in overlapping windows.
@@ -103,7 +109,7 @@ The assignment's three scenarios, fully automated against a local Metabase:
 - **Pipeline management in the UI:** create, edit (live validation, errors mapped to lines), duplicate, version history and restore, and archive, with conflict protection and a guarantee that secrets stay in environment variables.
 - **A complete CLI:** everything the UI does, plus per-run overrides (`--set key=value`, `--headed`, `--no-retry`, `--config FILE`).
 - **UI and API:** an operations UI (overview, pipeline page, run history, run detail with timeline, screenshots, logs and retry) and a JSON API that serves ingested data as JSON or CSV.
-- **Quality gates:** 162 unit tests, 8 ClickHouse integration tests and 9 end-to-end tests, plus `ruff` and `mypy --strict`, all run by GitHub Actions CI.
+- **Quality gates:** 173 unit tests, 8 ClickHouse integration tests and 18 end-to-end tests, plus `ruff` and `mypy --strict`, all run by GitHub Actions CI.
 
 ---
 
@@ -237,10 +243,14 @@ source:
     dashboard: Customer Usage              # or   question: <name>
     card: Daily Customer Usage
   filters:
-    usage_date: past7days                  # dashboard parameter slug -> value (Metabase syntax)
+    usage_date: past7days                  # parameter slug -> value(s), Metabase syntax
+    # priority: [High, Urgent]             # several values for a category filter
+    # region: {value: EU, label: Sales Region}   # long form: explicit widget label
+  filter_mode: auto                        # widget | url | auto (widget, URL fallback)
   export:
     format: xlsx                           # csv | xlsx | json
-    formatted: false                       # raw ISO dates / numbers
+    formatted: false                       # raw ISO dates / numbers (true = locale formatted)
+    filename: Customer_Usage_7Day.xlsx     # stored name; {date} = run date
   # selectors: {...}                       # override UI hooks if a Metabase upgrade changes them
 
 browser:                                   # all optional
@@ -302,7 +312,7 @@ $ dashdashgo validate
 
 **Transform steps:** `normalize_columns`, `rename`, `drop_columns`, `strip_whitespace`,
 `change_case`, `fill_null`, `drop_duplicates`, `filter_rows`, `parse_json`, `flatten`,
-`pivot` and `compute`. Type conversion is not a step: it's derived from `destination.columns`.
+`pivot`, `parse_numbers` (for formatted exports such as `$1,234.56`) and `compute`. Type conversion is not a step: it's derived from `destination.columns`.
 
 **Supported column types:** `String`, `FixedString(N)`, `(U)Int8–64`, `Float32/64`,
 `Decimal(P,S)`, `Bool`, `Date`, `Date32`, `DateTime[('tz')]`, `DateTime64(p[, 'tz'])`,
@@ -374,9 +384,11 @@ config on the overview.
   `${ENV_VAR}` reference; a plaintext secret is rejected with a pointer to the line. The
   editor only ever shows raw YAML, which therefore never contains secret values.
 
-In Docker, configs live on the `app-reports` volume at `/data/reports`. It's seeded from
-`./reports` on first start and keeps UI/CLI edits across restarts and rebuilds.
-`make export-reports` copies the edited configs back into the repository.
+In Docker, configs live on the `app-reports` volume at `/data/reports`, which keeps UI/CLI
+edits across restarts and rebuilds. Reports shipped with the image (`./reports`) are added
+at startup when the volume has never had them. This is add-only: an edited report is never
+overwritten, and an archived one is never brought back. `make export-reports` copies the
+edited configs back into the repository.
 
 The editor is backed by a small API (`/api/reports/{name}/config`, `.../validate`,
 `.../history`, `POST /api/reports`, `DELETE /api/reports/{name}`), so the same operations can
@@ -525,9 +537,21 @@ and still mark the run FAILED, so a run never stays RUNNING.
   `page.add_locator_handler`.
 - **SPA races** are handled explicitly. For example, after entering a collection the adapter
   waits until the header shows that collection's name before searching its items.
-- **Filters** are applied through the dashboard's URL parameters, exactly as Metabase does
-  when a filter widget changes, and then *verified*: Metabase silently drops unknown
-  parameters, so a mistyped slug fails the run instead of silently downloading unfiltered data.
+- **Filters** have three modes (`source.filter_mode`):
+  - `widget` operates the dashboard's filter widgets like a person. It clears the widget,
+    then either clicks a shortcut such as *Previous 7 days*, uses the *Relative date range*
+    editor (interval + unit) for other periods, or ticks the values in a category list
+    (searching long lists) and presses *Add filter*.
+  - `url` sets the dashboard/question parameters in the URL, which is what Metabase itself
+    does when a widget changes.
+  - `auto` (the default) tries the widgets and falls back to the URL if one can't be operated.
+    Questions have no dashboard widgets, so they use the URL.
+
+  Either way the result is **verified** against the page's parameter state: a mistyped slug
+  (Metabase silently drops unknown ones) is a `ConfigurationError`, a value the widget
+  doesn't offer is a `ConfigurationError`, and any other active filter (Metabase remembers
+  each user's last values) is logged as a warning. The *Apply filters* step records which
+  method was used, for example `usage_date=past7days via widget`.
 - **Downloads** are validated for existence, non-zero size, the expected format (zip
   structure for XLSX, JSON start, not binary, not an HTML error page), size limits and a
   SHA-256 hash. The file must also parse. A download event alone doesn't count as success.
@@ -565,6 +589,14 @@ simply call `log.info(...)`:
 Each run also gets its own JSON-lines log (`logs/<report>/<date>/<run_id>/run.log`, served
 in the UI) and a `run.json` summary that's readable even without ClickHouse. Set
 `LOG_FORMAT=json` for JSON on stdout.
+
+**Where a run's logs and artifacts live.** They're written to the storage of the process that
+executed the run, while run metadata goes to the shared ClickHouse. A run started inside the
+stack (UI, API, scheduler, or `docker compose exec app dashdashgo run`) writes to the app's
+volume, and the UI shows everything. A run started from a host terminal (`uv run dashdashgo
+run`) writes to that machine's `STORAGE_ROOT`. Each run records `executed_on`
+(`host:storage-location`), and if its log isn't in the server's storage, the run page says
+where it was written instead of showing an empty panel.
 
 ---
 
@@ -690,9 +722,9 @@ A step-by-step **manual test script**, with the expected result for every featur
 mode, is in [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
 
 ```bash
-make test              # unit tests (162): no infrastructure needed, about 3 s
+make test              # unit tests (173): no infrastructure needed, about 3 s
 make test-integration  # Python <-> ClickHouse (8): needs the stack running
-make test-e2e          # Metabase -> Playwright -> ClickHouse (9), inside the app container
+make test-e2e          # Metabase -> Playwright -> ClickHouse (18), inside the app container
 make test-all          # everything, inside the app container
 make lint              # ruff check + ruff format --check + mypy --strict
 ```
@@ -701,7 +733,7 @@ make lint              # ruff check + ruff format --check + mypy --strict
 |---|---|
 | **unit** | config validation (18 invalid cases, env interpolation), readers (BOM, delimiters, sheets, nested JSON, malformed input), every transform, type coercion (ranges, decimals, dates, time zones, nulls), quality policies, fingerprinting, retry and backoff classification, storage and traversal safety, log redaction and per-run log isolation, download validation, the orchestrator end to end with fakes (success, skip, force, retry, failure, bugs), **real headless-Chromium acquisition** with a scripted adapter (retry + screenshot, no retry on auth failure), runner locking, scheduler wiring and cron semantics, API and UI rendering, config store (versioning, conflicts, history, secret guard), config API, CLI commands and `--set` overrides |
 | **integration** | table creation and drift detection, typed round trip, ReplacingMergeTree + `FINAL`, insert-token dedup, metadata repository, restart recovery |
-| **e2e** | all three scenarios against the seeded Metabase; cleaning verified on real exports; duplicate run → SKIPPED; wrong password → 1 attempt, screenshot, no secret in artifacts; missing dashboard → not retried; unknown filter slug → ConfigurationError; unreachable dashboard → retried, then FAILED |
+| **e2e** | all eight pipelines against the seeded Metabase; filters really set through the widgets (date + multi-select), relative periods without a shortcut, a value the widget doesn't offer, raw files stored under configured names; cleaning verified on real exports; duplicate run → SKIPPED; wrong password → 1 attempt, screenshot, no secret in artifacts; missing dashboard → not retried; unknown filter slug → ConfigurationError; unreachable dashboard → retried, then FAILED |
 
 E2E tests write to a throwaway ClickHouse database and storage directory and drop them
 afterwards.

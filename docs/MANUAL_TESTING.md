@@ -31,7 +31,8 @@ ClickHouse HTTP → `http://localhost:8123`, DashDashGo → `APP`.
 | 0.3 | `make up` | Builds, then prints the UI, API docs and Metabase URLs. The first start takes about 2–4 minutes |
 | 0.4 | `docker compose ps -a` | `clickhouse`, `postgres`, `metabase`, `app` → **Up (healthy)**; `metabase-seed` → **Exited (0)** |
 | 0.5 | `docker compose logs metabase-seed \| tail -3` | Ends with `Metabase demo content is ready` |
-| 0.6 | `curl -s APP/api/health` | `{"status":"ok","version":"1.0.0","clickhouse":"up","scheduler":"running","reports":3}` with HTTP 200 |
+| 0.6 | `curl -s APP/api/health` | `{"status":"ok","version":"1.0.0","clickhouse":"up","scheduler":"running","reports":8}` with HTTP 200 |
+| 0.7 | `docker compose logs app \| grep "Added bundled"` | `Added bundled report configs: customer_usage, inventory_snapshot, …, weekly_sales` (all 8, on first start) |
 
 ---
 
@@ -45,6 +46,7 @@ Open **http://localhost:3000** and log in with `METABASE_USERNAME` / `METABASE_P
 | 1.2 | Sidebar → **Customer Success** → **Customer Usage** | A dashboard with a **Usage Date** filter and the card **Daily Customer Usage** in long format (one row per day/account/metric) |
 | 1.3 | Open `http://localhost:3000/dashboard/<id>?usage_date=past7days` (the Customer Usage dashboard id is in the URL from 1.2) | Filter shows **Previous 7 days**, card shows **280 rows** |
 | 1.4 | Sidebar → **Finance Archive** → **Q4 Budget Review** | A question with 54 rows; the `details` column holds nested JSON (owner, approval, forecast); `actual` is empty for Marketing in December |
+| 1.4a | Collections **Marketing** (*Marketing Performance* dashboard, *Hourly Web Traffic* question), **Operations** (*Inventory Snapshot*), **Customer Success** → *Support Overview*, **Finance Archive** → *SaaS Metrics* | The sources of the five extra pipelines (section 2b). *Support Overview* has two filters: **Created Date** and **Priority** |
 | 1.5 | Wrong password on the Metabase login page | Inline error *"Did not match stored password"*. DashDashGo detects exactly this in step 6.1 |
 
 ---
@@ -55,13 +57,31 @@ Open **APP**.
 
 | # | Action | Expected |
 |---|---|---|
-| 2.1 | Overview | Tiles show **0 runs** and "—" for rates. The Pipelines table lists `customer_usage` (XLSX, `30 6 * * *`, "next in …"), `q4_budget_review` (JSON, *On demand*) and `weekly_sales` (CSV, `0 8 * * 1`). *Last run* = "Never run" |
+| 2.1 | Overview | Tiles show **0 runs** and "—" for rates. The Pipelines table lists **8 pipelines**, for example `customer_usage` (XLSX, `30 6 * * *`, "next in …"), `q4_budget_review` (JSON, *On demand*) and `weekly_sales` (CSV, `0 8 * * 1`). *Last run* = "Never run" |
 | 2.2 | Click **Run** next to `weekly_sales` | Redirects to the run page with a *Running* pill and a **Live** dot. The timeline fills in while you watch; *Acquire report* expands into *Start browser → Log in → Locate report → Apply filters → Download → Validate download* |
 | 2.3 | Wait about 5 s | Status **Success**. Every step is ticked with a duration. Result: *Rows downloaded 280, rejected 0, loaded 280*. *Run again* button. Artifacts: `raw/…csv`, `processed/data.parquet`, `logs/run.log`, `run.json` |
 | 2.4 | Logs panel on the same page | About 25 INFO lines, each tagged with its stage. Switch to **Errors** → none |
-| 2.5 | Pipeline `customer_usage` → **Run now** | Success: downloaded **280**, loaded **70** (pivoted to one row per account-day). *Apply filters* step says `usage_date=past7days` |
+| 2.5 | Pipeline `customer_usage` → **Run now** | Success: downloaded **280**, loaded **70** (pivoted to one row per account-day). *Apply filters* step says `usage_date=past7days via widget`: Playwright clicked the *Usage Date* widget and chose *Previous 7 days* |
+| 2.5a | Artifacts on the run pages of 2.3 / 2.5 / 2.6 | Raw files are stored as **`Weekly_Sales.csv`**, **`Customer_Usage_7Day.xlsx`**, **`Q4_Budget_Review.json`** (`export.filename`); the *Download* step shows `<metabase name> -> <stored name>` |
 | 2.6 | Pipeline `q4_budget_review` → **Run now** | Success: downloaded **54**, loaded **54** |
 | 2.7 | Back to Overview | Runs 3, success rate **100%**, rows loaded **404**, a green cell in each pipeline's *Recent runs* strip (hover it for a tooltip) |
+
+---
+
+## 2b. The five additional pipelines and filter modes
+
+| # | Action | Expected |
+|---|---|---|
+| 2b.1 | Run **`support_tickets`** | Success, **180 rows** (30 days × 3 channels × High/Urgent). *Apply filters*: `created_date=past30days, priority=High,Urgent via widget`: both widgets were operated in the UI (`filter_mode: widget`). Stored as `Support_Tickets_<date>.csv` |
+| 2b.2 | Data preview of `support_tickets` | Only `High` and `Urgent` priorities; some `csat` values are `null` (days without survey answers), not 0 |
+| 2b.3 | Run **`marketing_campaigns`** | Success, **180 rows**. *Apply filters*: `report_date=past30days via url` (`filter_mode: url`). Open the raw CSV under Artifacts: values look like `"$2,760.94"`, `"165,460"`, `"August 22, 2026"` (a formatted export). Data preview: exact decimals `2760.94`, dates, plus derived `ctr` and `roas` |
+| 2b.4 | Run **`inventory_snapshot`** | Success: **downloaded 25, rejected 2, loaded 22**. The TOTAL summary row is dropped by `filter_rows`; the two negative-stock rows are quarantined. *Validate data* links **Rejected rows (CSV)** with `on_hand: below minimum 0`. Preview shows `supplier_name`, `lead_time_days` and a `needs_reorder` true/false column |
+| 2b.5 | Run **`web_traffic_hourly`** | Success, about **240 rows** (48 hours × 5 pages); `hour_start` is a `DateTime`. Run it again a few hours later: new hours are added, overlapping hours are replaced (one row per hour and page) |
+| 2b.6 | Run **`mrr_monthly`** | Success: **downloaded 37, loaded 36**. The export repeats one row and `drop_duplicates` removes it; `net_new_mrr` is derived. Scheduled for the 1st of each month (`0 7 1 * *`) |
+| 2b.7 | Same report, other filter mode: `ddg run customer_usage --set source.filter_mode=url --force` | Success; *Apply filters* says `… via url` |
+| 2b.8 | Period without a shortcut: `ddg run customer_usage --set source.filters.usage_date=past14days --set source.filter_mode=widget --force` | Success with **560 downloaded** (14 days). The widget's *Relative date range* editor was used (interval 14, unit days) |
+| 2b.9 | A value the widget doesn't offer: `ddg run support_tickets --set 'source.filters.priority=[Critical]'` | `FAILED … ConfigurationError: filter 'Priority' does not offer the value 'Critical'` (not retried) |
+| 2b.10 | Watch it happen (local, not Docker): `CLICKHOUSE_HOST=localhost METABASE_URL=http://localhost:3000 uv run dashdashgo run support_tickets --headed --force` | A Chromium window clears and sets both filters, then downloads |
 
 ---
 
@@ -207,6 +227,7 @@ Each failure is recorded with its stage, a message, evidence and a **Retry** but
 | 10.5 | `git grep -n "$METABASE_PASSWORD"` (in the repo, after `set -a; . ./.env`) | No matches; `.env` is git-ignored |
 | 10.6 | `docker compose exec app id` | `uid=10001(dashdashgo)`: not root |
 | 10.7 | `ddg prune --days 0` | `Retention disabled (0 days); nothing pruned` (the daily job uses `STORAGE_RETENTION_DAYS`) |
+| 10.7a | Run something from a **host** terminal (step 8.17 or 2b.10), then open that run in the UI | *Result → Executed on* shows your machine and its storage path. Because the logs were written there, the Logs panel explains that instead of being empty. Runs started in the stack show the container's `/data/storage` |
 | 10.8 | `make export-reports` | Configs edited in the UI (for example `sales_copy.yaml`) appear in `./reports/` |
 
 ---
@@ -215,10 +236,10 @@ Each failure is recorded with its stage, a message, evidence and a **Retry** but
 
 | # | Command | Expected |
 |---|---|---|
-| 11.1 | `make test` | `162 passed, 17 deselected` in about 3 s (unit tests, no infrastructure) |
+| 11.1 | `make test` | `173 passed, 26 deselected` in about 3 s (unit tests, no infrastructure) |
 | 11.2 | `make test-integration` (stack running) | `8 passed` |
-| 11.3 | `make test-e2e` | `9 passed` in about 30 s (real Metabase + Chromium + ClickHouse, isolated database) |
-| 11.4 | `make test-all` | `179 passed` inside the app container |
+| 11.3 | `make test-e2e` | `18 passed` in about 60 s (real Metabase + Chromium + ClickHouse, isolated database) |
+| 11.4 | `make test-all` | `199 passed` inside the app container |
 | 11.5 | `make lint` | `All checks passed!`, `… files already formatted`, `Success: no issues found` |
 | 11.6 | GitHub → **Actions** tab after a push | Workflow **CI** with jobs *Lint, types, unit tests*, *ClickHouse integration tests*, *End-to-end (Docker Compose)*, all green |
 
