@@ -3,7 +3,7 @@ retry/screenshot behaviour driven through a real headless browser and a fake ada
 
 from __future__ import annotations
 
-import shutil
+import os
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -224,11 +224,14 @@ class RejectingAdapter(ScriptedAdapter):
         raise AuthenticationError("rejected")
 
 
-chromium_missing = (
-    shutil.which("chromium") is None
-    and not any(Path.home().glob("Library/Caches/ms-playwright/chromium*"))
-    and not any(Path("/ms-playwright").glob("chromium*"))
-)
+def _playwright_chromium_installed() -> bool:
+    """Playwright's browser cache: $PLAYWRIGHT_BROWSERS_PATH, Linux or macOS default."""
+    roots = [Path(p) for p in [os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")] if p]
+    roots += [Path.home() / ".cache/ms-playwright", Path.home() / "Library/Caches/ms-playwright"]
+    return any(any(root.glob("chromium*")) for root in roots if root.is_dir())
+
+
+chromium_missing = not _playwright_chromium_installed()
 
 
 @pytest.mark.skipif(chromium_missing, reason="Playwright Chromium not installed")

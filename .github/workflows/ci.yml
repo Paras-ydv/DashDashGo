@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Lint, types and unit tests (incl. real headless-Chromium acquisition tests)
+  # ---------------------------------------------------------------------------
+  quality:
+    name: Lint, types, unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.7.20"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+
+      - name: Install Playwright Chromium
+        run: uv run playwright install --with-deps chromium
+
+      - name: ruff (lint)
+        run: uv run ruff check src tests demo scripts
+
+      - name: ruff (format)
+        run: uv run ruff format --check src tests demo scripts
+
+      - name: mypy --strict
+        run: uv run mypy
+
+      - name: Validate shipped report configs
+        env:
+          METABASE_URL: http://metabase.invalid:3000
+          METABASE_USERNAME: ci@example.com
+          METABASE_PASSWORD: not-a-real-password
+        run: uv run dashdashgo validate
+
+      - name: Unit tests
+        run: uv run pytest -ra
+
+  # ---------------------------------------------------------------------------
+  # Python <-> ClickHouse
+  # ---------------------------------------------------------------------------
+  integration:
+    name: ClickHouse integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.8
+        env:
+          CLICKHOUSE_USER: ci
+          CLICKHOUSE_PASSWORD: ci-password
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports:
+          - 8123:8123
+        options: >-
+          --health-cmd "wget -q --spider http://127.0.0.1:8123/ping || exit 1"
+          --health-interval 5s --health-timeout 3s --health-retries 30
+          --ulimit nofile=262144:262144
+    env:
+      CLICKHOUSE_HOST: localhost
+      CLICKHOUSE_PORT: "8123"
+      CLICKHOUSE_USER: ci
+      CLICKHOUSE_PASSWORD: ci-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.7.20"
+          enable-cache: true
+      - run: uv sync --frozen --python 3.12
+      - name: Integration tests
+        run: uv run pytest -m integration -ra
+
+  # ---------------------------------------------------------------------------
+  # The whole stack exactly as an evaluator runs it: docker compose up, then
+  # Metabase -> Playwright -> ClickHouse inside the app container.
+  # ---------------------------------------------------------------------------
+  e2e:
+    name: End-to-end (Docker Compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [quality]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate .env with random secrets
+        run: python3 scripts/make_env.py
+
+      - name: Build and start the stack
+        run: docker compose up -d --build
+
+      - name: Wait for the app to become healthy
+        run: |
+          for _ in $(seq 1 90); do
+            status=$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q app)" 2>/dev/null || true)
+            echo "app: ${status:-starting}"
+            [ "$status" = healthy ] && exit 0
+            sleep 5
+          done
+          exit 1
+
+      - name: End-to-end tests
+        run: docker compose exec -T app pytest -m e2e -ra
+
+      - name: Smoke test the CLI and API
+        run: |
+          docker compose exec -T app dashdashgo run weekly_sales
+          docker compose exec -T app dashdashgo runs --limit 5
+          curl -fsS http://localhost:8000/api/health
+
+      - name: Service logs
+        if: failure()
+        run: docker compose logs --no-color --tail 300
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
