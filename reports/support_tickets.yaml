@@ -1,0 +1,59 @@
+# Support Overview dashboard: two filter widgets operated like a user would -
+# a relative date ("Previous 30 days") and a multi-select category (High + Urgent).
+name: support_tickets
+description: >-
+  Daily ticket volume, resolution, first-response time, CSAT and SLA breaches per
+  channel for High and Urgent tickets over the last 30 days.
+
+source:
+  platform: metabase
+  base_url: ${METABASE_URL}
+  credentials:
+    username: ${METABASE_USERNAME}
+    password: ${METABASE_PASSWORD}
+  location:
+    collection: [Customer Success]
+    dashboard: Support Overview
+    card: Daily Ticket Volume
+  filters:
+    created_date: past30days
+    priority: [High, Urgent]
+  filter_mode: widget          # always through the UI widgets - fail if they can't be used
+  export:
+    format: csv
+    filename: Support_Tickets_{date}.csv
+
+ingestion:
+  expected_columns:
+    [Date, Channel, Priority, Team, Opened, Resolved, Median First Response (min), CSAT, SLA Breaches]
+  transforms:
+    - normalize_columns        # "Median First Response (min)" -> median_first_response_min
+    - rename: {columns: {date: ticket_date, opened: tickets_opened, resolved: tickets_resolved}}
+  quality:
+    on_invalid_rows: quarantine
+    max_invalid_ratio: 0.02
+    rules:
+      - {column: priority, allowed: [High, Urgent]}   # proves the category filter applied
+      - {column: csat, min: 1, max: 5}
+      - {column: median_first_response_min, min: 0}
+
+destination:
+  database: analytics
+  table: support_tickets_daily
+  partition_by: toYYYYMM(ticket_date)
+  order_by: [ticket_date, channel, priority]
+  columns:
+    - {name: ticket_date, type: Date}
+    - {name: channel, type: LowCardinality(String)}
+    - {name: priority, type: LowCardinality(String)}
+    - {name: team, type: LowCardinality(String)}
+    - {name: tickets_opened, type: UInt32}
+    - {name: tickets_resolved, type: UInt32}
+    - {name: median_first_response_min, type: Float32}
+    - {name: csat, type: Nullable(Float32), comment: NULL when no survey responses that day}
+    - {name: sla_breaches, type: UInt16}
+
+schedule:
+  enabled: true
+  cron: "0 9 * * 1-5"          # weekday mornings
+  timezone: Asia/Kolkata

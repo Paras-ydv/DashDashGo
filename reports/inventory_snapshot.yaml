@@ -1,0 +1,63 @@
+# Operations: today's stock per warehouse and SKU as JSON with a nested supplier
+# object. The export appends a TOTAL row and contains two corrupt records
+# (negative stock) - the pipeline drops the summary row and quarantines the rest.
+name: inventory_snapshot
+description: >-
+  Daily inventory snapshot per warehouse and SKU with supplier details, available
+  stock and a reorder flag.
+
+source:
+  platform: metabase
+  base_url: ${METABASE_URL}
+  credentials:
+    username: ${METABASE_USERNAME}
+    password: ${METABASE_PASSWORD}
+  location:
+    collection: [Operations]
+    question: Inventory Snapshot
+  export:
+    format: json
+    filename: Inventory_{date}.json
+
+ingestion:
+  expected_columns:
+    [snapshot_date, warehouse, sku, product, on_hand, reserved, reorder_point, unit_cost, supplier]
+  transforms:
+    - filter_rows: {exclude_where: {sku: [TOTAL]}}     # the report's summary line
+    - parse_json: {columns: [supplier]}
+    - flatten: {columns: [supplier]}                   # supplier.name -> supplier_name
+    - rename: {columns: {supplier_lead_time_days: lead_time_days}}
+    - compute:
+        columns:
+          available: on_hand - reserved
+          needs_reorder: (on_hand - reserved) <= reorder_point
+  quality:
+    on_invalid_rows: quarantine
+    max_invalid_ratio: 0.1
+    rules:
+      - {column: on_hand, min: 0}                      # negative stock is a data error
+      - {column: unit_cost, min: 0}
+
+destination:
+  database: analytics
+  table: inventory_snapshot
+  order_by: [snapshot_date, warehouse, sku]
+  columns:
+    - {name: snapshot_date, type: Date}
+    - {name: warehouse, type: LowCardinality(String)}
+    - {name: sku, type: String}
+    - {name: product, type: String}
+    - {name: on_hand, type: Int32}
+    - {name: reserved, type: UInt32}
+    - {name: available, type: Int32}
+    - {name: reorder_point, type: UInt32}
+    - {name: needs_reorder, type: Bool}
+    - {name: unit_cost, type: "Decimal(10, 2)"}
+    - {name: supplier_name, type: String}
+    - {name: supplier_country, type: LowCardinality(String)}
+    - {name: lead_time_days, type: UInt16}
+
+schedule:
+  enabled: true
+  cron: "0 7 * * *"
+  timezone: Asia/Kolkata

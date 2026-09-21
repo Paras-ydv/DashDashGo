@@ -1,0 +1,49 @@
+# Hourly web analytics from a question (not a dashboard): date-time data, a relative
+# "last 48 hours" filter, and overlapping windows collapsed by ReplacingMergeTree.
+name: web_traffic_hourly
+description: >-
+  Hourly sessions, page views, bounce rate and session length per page for the last
+  48 hours; each run overlaps the previous ones and rows are deduplicated per hour.
+
+source:
+  platform: metabase
+  base_url: ${METABASE_URL}
+  credentials:
+    username: ${METABASE_USERNAME}
+    password: ${METABASE_PASSWORD}
+  location:
+    collection: [Marketing]
+    question: Hourly Web Traffic
+  filters:
+    hour_start: past48hours
+  filter_mode: auto            # questions have no dashboard widgets: auto uses the URL
+  export:
+    format: csv
+    filename: Web_Traffic_{date}.csv
+
+ingestion:
+  expected_columns: [hour_start, page, sessions, pageviews, bounce_rate, avg_session_seconds]
+  quality:
+    on_invalid_rows: quarantine
+    max_invalid_ratio: 0.01
+    rules:
+      - {column: bounce_rate, min: 0, max: 1}
+      - {column: page, pattern: "/.*"}
+
+destination:
+  database: analytics
+  table: web_traffic_hourly
+  partition_by: toYYYYMM(hour_start)
+  order_by: [hour_start, page]
+  columns:
+    - {name: hour_start, type: "DateTime('UTC')"}
+    - {name: page, type: LowCardinality(String)}
+    - {name: sessions, type: UInt32}
+    - {name: pageviews, type: UInt32}
+    - {name: bounce_rate, type: Float32}
+    - {name: avg_session_seconds, type: UInt16}
+
+schedule:
+  enabled: true
+  cron: "15 */3 * * *"         # every 3 hours; 48h windows overlap heavily by design
+  timezone: UTC

@@ -1,0 +1,58 @@
+# SaaS Metrics dashboard (XLSX): monthly recurring revenue movements per plan. The
+# billing export repeats its latest row for reconciliation - an exact duplicate the
+# pipeline removes before the natural-key check would reject it.
+name: mrr_monthly
+description: >-
+  Monthly recurring revenue movements (new, expansion, contraction, churn, ending MRR)
+  and customer counts per plan for the last 12 months, with net new MRR derived.
+
+source:
+  platform: metabase
+  base_url: ${METABASE_URL}
+  credentials:
+    username: ${METABASE_USERNAME}
+    password: ${METABASE_PASSWORD}
+  location:
+    collection: [Finance Archive]
+    dashboard: SaaS Metrics
+    card: MRR Movements
+  export:
+    format: xlsx
+    filename: MRR_Movements_{date}.xlsx
+
+ingestion:
+  reader:
+    sheet: Query result
+  expected_columns:
+    [Month, Plan, New MRR, Expansion MRR, Contraction MRR, Churned MRR, Ending MRR, Customers]
+  transforms:
+    - normalize_columns
+    - drop_duplicates
+    - compute:
+        columns:
+          net_new_mrr: new_mrr + expansion_mrr - contraction_mrr - churned_mrr
+  quality:
+    on_invalid_rows: fail
+    rules:
+      - {column: plan, allowed: [Starter, Growth, Enterprise]}
+      - {column: ending_mrr, min: 0}
+
+destination:
+  database: analytics
+  table: mrr_monthly
+  order_by: [month, plan]
+  columns:
+    - {name: month, type: Date}
+    - {name: plan, type: LowCardinality(String)}
+    - {name: new_mrr, type: "Decimal(14, 2)"}
+    - {name: expansion_mrr, type: "Decimal(14, 2)"}
+    - {name: contraction_mrr, type: "Decimal(14, 2)"}
+    - {name: churned_mrr, type: "Decimal(14, 2)"}
+    - {name: net_new_mrr, type: "Decimal(14, 2)"}
+    - {name: ending_mrr, type: "Decimal(14, 2)"}
+    - {name: customers, type: UInt32}
+
+schedule:
+  enabled: true
+  cron: "0 7 1 * *"            # first day of each month
+  timezone: Asia/Kolkata

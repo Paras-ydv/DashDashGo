@@ -75,6 +75,11 @@ def run(container: Container, name: str) -> RunRecord:
         ("weekly_sales", "sales_metrics", 200),
         ("customer_usage", "daily_usage", 60),
         ("q4_budget_review", "finance_data", 54),
+        ("support_tickets", "support_tickets_daily", 150),
+        ("marketing_campaigns", "marketing_campaign_daily", 150),
+        ("inventory_snapshot", "inventory_snapshot", 22),
+        ("web_traffic_hourly", "web_traffic_hourly", 200),
+        ("mrr_monthly", "mrr_monthly", 36),
     ],
 )
 def test_report_is_acquired_transformed_and_loaded(
@@ -177,3 +182,51 @@ def test_unreachable_dashboard_is_retried_then_fails(container: Container, e2e_d
         "NavigationError",
         2,
     )
+
+
+def _stage_message(container: Container, run_id: str, stage: str) -> str:
+    return next(s.message for s in container.runs.stages(run_id) if s.stage == stage)
+
+
+def test_raw_files_are_stored_under_configured_names(container: Container) -> None:
+    names = {Path(o.key).name for o in container.storage.list("raw/weekly_sales/")}
+    assert "Weekly_Sales.csv" in names
+    names = {Path(o.key).name for o in container.storage.list("raw/q4_budget_review/")}
+    assert "Q4_Budget_Review.json" in names
+
+
+def test_dashboard_filters_are_set_through_the_widgets(container: Container, e2e_db: str) -> None:
+    """support_tickets uses filter_mode: widget - a date and a multi-select category."""
+    run_id = container.runs.list_runs(report="support_tickets", limit=1)[0].run_id
+    message = _stage_message(container, run_id, "acquisition.filters")
+    assert message == "created_date=past30days, priority=High,Urgent via widget"
+    priorities = container.clickhouse.query_rows(
+        f"SELECT DISTINCT priority AS p FROM `{e2e_db}`.support_tickets_daily"
+    )
+    assert {r["p"] for r in priorities} == {"High", "Urgent"}
+
+
+def test_relative_period_without_a_shortcut_uses_the_date_editor(
+    container: Container, e2e_db: str
+) -> None:
+    def fourteen_days(data: dict[str, Any]) -> None:
+        data["source"]["filters"] = {"usage_date": "past14days"}
+        data["source"]["filter_mode"] = "widget"
+
+    result = run(
+        container, install(container, e2e_db, "customer_usage", "e2e_14_days", fourteen_days)
+    )
+    assert result.status is RunStatus.SUCCESS, result.error_message
+    assert result.records_downloaded == 14 * 10 * 4
+    assert _stage_message(container, result.run_id, "acquisition.filters").endswith("via widget")
+
+
+def test_widget_value_not_offered_is_a_configuration_error(
+    container: Container, e2e_db: str
+) -> None:
+    def critical(data: dict[str, Any]) -> None:
+        data["source"]["filters"]["priority"] = ["Critical"]
+
+    result = run(container, install(container, e2e_db, "support_tickets", "e2e_critical", critical))
+    assert (result.status, result.error_type) == (RunStatus.FAILED, "ConfigurationError")
+    assert "does not offer the value 'Critical'" in result.error_message

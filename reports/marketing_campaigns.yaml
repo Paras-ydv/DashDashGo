@@ -1,0 +1,65 @@
+# Marketing Performance dashboard exported *formatted* ("$1,234.56", "12,345",
+# "September 14, 2026") - the pipeline has to parse human-formatted values.
+name: marketing_campaigns
+description: >-
+  Daily campaign performance (impressions, clicks, conversions, spend, revenue) for the
+  last 30 days, with click-through rate and return on ad spend derived in the pipeline.
+
+source:
+  platform: metabase
+  base_url: ${METABASE_URL}
+  credentials:
+    username: ${METABASE_USERNAME}
+    password: ${METABASE_PASSWORD}
+  location:
+    collection: [Marketing]
+    dashboard: Marketing Performance
+    card: Campaign Performance
+  filters:
+    report_date: past30days
+  filter_mode: url             # parameters set directly in the dashboard URL (then verified)
+  export:
+    format: csv
+    formatted: true            # locale formatting on purpose: currency, thousands, long dates
+    filename: Marketing_Campaigns_30Day.csv
+
+ingestion:
+  expected_columns:   # formatted exports add the currency to money headers
+    [Date, Channel, Campaign ID, Campaign, Impressions, Clicks, Conversions, "Spend ($)", "Revenue ($)"]
+  transforms:
+    - normalize_columns
+    - rename: {columns: {date: report_date}}
+    - parse_numbers: {columns: [impressions, clicks, conversions, spend, revenue]}
+    - compute:
+        columns:
+          ctr: clicks / impressions
+          roas: revenue / spend
+  quality:
+    on_invalid_rows: fail
+    rules:
+      - {column: spend, min: 0}
+      - {column: ctr, min: 0, max: 1}
+      - {column: channel, allowed: [Paid Search, Paid Social, Display, Email]}
+
+destination:
+  database: analytics
+  table: marketing_campaign_daily
+  partition_by: toYYYYMM(report_date)
+  order_by: [report_date, campaign_id]
+  columns:
+    - {name: report_date, type: Date}
+    - {name: channel, type: LowCardinality(String)}
+    - {name: campaign_id, type: String}
+    - {name: campaign, type: String}
+    - {name: impressions, type: UInt64}
+    - {name: clicks, type: UInt64}
+    - {name: conversions, type: UInt32}
+    - {name: spend, type: "Decimal(12, 2)", comment: USD}
+    - {name: revenue, type: "Decimal(12, 2)", comment: USD}
+    - {name: ctr, type: Float64, comment: clicks / impressions}
+    - {name: roas, type: Float64, comment: revenue / spend}
+
+schedule:
+  enabled: true
+  cron: "0 10 * * *"
+  timezone: Asia/Kolkata

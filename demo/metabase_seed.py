@@ -23,6 +23,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
+from dataclasses import dataclass
 from typing import Any
 
 log = logging.getLogger("metabase-seed")
@@ -64,6 +66,75 @@ SELECT line_id, fiscal_quarter, period_month, department, cost_center,
        category, budget, actual, details
 FROM finance.budget_lines
 ORDER BY line_id
+"""
+
+SUPPORT_TICKETS_SQL = """\
+SELECT
+    ticket_date                AS "Date",
+    channel                    AS "Channel",
+    priority                   AS "Priority",
+    team                       AS "Team",
+    tickets_opened             AS "Opened",
+    tickets_resolved           AS "Resolved",
+    median_first_response_min  AS "Median First Response (min)",
+    csat_score                 AS "CSAT",
+    sla_breaches               AS "SLA Breaches"
+FROM support.ticket_daily
+WHERE {{created_date}} AND {{priority}}
+ORDER BY 1, 2, 3
+"""
+
+CAMPAIGNS_SQL = """\
+SELECT
+    report_date  AS "Date",
+    channel      AS "Channel",
+    campaign_id  AS "Campaign ID",
+    campaign     AS "Campaign",
+    impressions  AS "Impressions",
+    clicks       AS "Clicks",
+    conversions  AS "Conversions",
+    spend        AS "Spend",
+    revenue      AS "Revenue"
+FROM marketing.campaign_daily
+WHERE {{report_date}}
+ORDER BY 1, 3
+"""
+
+WEB_TRAFFIC_SQL = """\
+SELECT hour_start, page, sessions, pageviews, bounce_rate, avg_session_seconds
+FROM web.traffic_hourly
+WHERE {{hour_start}}
+ORDER BY 1, 2
+"""
+
+INVENTORY_SQL = """\
+-- Includes the summary row the upstream report appends; the pipeline drops it.
+SELECT * FROM (
+    SELECT snapshot_date, warehouse, sku, product, on_hand, reserved,
+           reorder_point, unit_cost, supplier
+    FROM ops.inventory_snapshot
+    UNION ALL
+    SELECT current_date, 'ALL', 'TOTAL', 'All products', sum(on_hand), sum(reserved),
+           NULL, NULL, NULL
+    FROM ops.inventory_snapshot
+) AS inventory
+ORDER BY warehouse = 'ALL', warehouse, sku
+"""
+
+MRR_SQL = """\
+-- The billing system re-exports its latest row for reconciliation, so one row
+-- appears twice - a realistic duplicate the pipeline must remove.
+SELECT * FROM (
+    SELECT month AS "Month", plan AS "Plan", new_mrr AS "New MRR",
+           expansion_mrr AS "Expansion MRR", contraction_mrr AS "Contraction MRR",
+           churned_mrr AS "Churned MRR", ending_mrr AS "Ending MRR", customers AS "Customers"
+    FROM billing.mrr_monthly
+    UNION ALL
+    SELECT month, plan, new_mrr, expansion_mrr, contraction_mrr, churned_mrr, ending_mrr, customers
+    FROM billing.mrr_monthly
+    WHERE month = (SELECT max(month) FROM billing.mrr_monthly) AND plan = 'Growth'
+) AS mrr
+ORDER BY 1, 2
 """
 
 
@@ -189,6 +260,7 @@ def ensure_card(
     sql: str,
     template_tags: dict[str, Any] | None = None,
     parameters: list[dict[str, Any]] | None = None,
+    visualization_settings: dict[str, Any] | None = None,
 ) -> int:
     existing = _collection_item(api, collection_id, "card", name)
     if existing is not None:
@@ -201,7 +273,7 @@ def ensure_card(
             "name": name,
             "type": "question",
             "display": "table",
-            "visualization_settings": {},
+            "visualization_settings": visualization_settings or {},
             "collection_id": collection_id,
             "parameters": parameters or [],
             "dataset_query": {
@@ -254,11 +326,108 @@ def ensure_dashboard(
     return dashboard_id
 
 
+@dataclass(frozen=True)
+class FieldFilter:
+    """A native-query field filter exposed as a card and dashboard parameter."""
+
+    slug: str
+    name: str
+    field_id: int
+    widget: str  # "date/all-options" or "string/="
+
+    @property
+    def tag_id(self) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"dashdashgo-demo/{self.slug}"))
+
+    def template_tag(self) -> dict[str, Any]:
+        return {
+            "id": self.tag_id,
+            "name": self.slug,
+            "display-name": self.name,
+            "type": "dimension",
+            "dimension": ["field", self.field_id, None],
+            "widget-type": self.widget,
+        }
+
+    def card_parameter(self) -> dict[str, Any]:
+        return {
+            "id": self.tag_id,
+            "name": self.name,
+            "slug": self.slug,
+            "type": self.widget,
+            "target": ["dimension", ["template-tag", self.slug]],
+        }
+
+    def dashboard_parameter(self) -> dict[str, Any]:
+        return {
+            "id": self.tag_id[:8],
+            "name": self.name,
+            "slug": self.slug,
+            "type": self.widget,
+            "sectionId": "date" if self.widget.startswith("date") else "string",
+        }
+
+    def mapping(self, card_id: int) -> dict[str, Any]:
+        return {
+            "parameter_id": self.tag_id[:8],
+            "card_id": card_id,
+            "target": ["dimension", ["template-tag", self.slug]],
+        }
+
+
+def filtered_card(
+    api: MetabaseAPI,
+    *,
+    name: str,
+    collection_id: int,
+    db_id: int,
+    sql: str,
+    filters: list[FieldFilter],
+    visualization_settings: dict[str, Any] | None = None,
+) -> int:
+    return ensure_card(
+        api,
+        name=name,
+        collection_id=collection_id,
+        db_id=db_id,
+        sql=sql,
+        template_tags={f.slug: f.template_tag() for f in filters},
+        parameters=[f.card_parameter() for f in filters],
+        visualization_settings=visualization_settings,
+    )
+
+
+def filtered_dashboard(
+    api: MetabaseAPI, *, name: str, collection_id: int, card_id: int, filters: list[FieldFilter]
+) -> int:
+    return ensure_dashboard(
+        api,
+        name=name,
+        collection_id=collection_id,
+        card_id=card_id,
+        parameters=[f.dashboard_parameter() for f in filters],
+        parameter_mappings=[f.mapping(card_id) for f in filters],
+    )
+
+
+def _currency(*columns: str) -> dict[str, Any]:
+    """Column formatting so 'Keep the data formatted' exports produce $1,234.56."""
+    return {
+        "column_settings": {
+            json.dumps(["name", c]): {"number_style": "currency", "currency": "USD"}
+            for c in columns
+        }
+    }
+
+
 def seed(api: MetabaseAPI) -> None:
     ensure_admin(api, os.environ["METABASE_USERNAME"], os.environ["METABASE_PASSWORD"])
     db_id = ensure_warehouse(
         api, os.environ.get("DEMO_WAREHOUSE_HOST", "postgres"), os.environ["DEMO_READER_PASSWORD"]
     )
+
+    def field(schema: str, table: str, column: str) -> int:
+        return wait_for_field(api, db_id, schema, table, column)
 
     # Scenario 1: Sales Report dashboard -> Weekly Sales (CSV)
     sales = ensure_collection(api, "Sales")
@@ -268,56 +437,27 @@ def seed(api: MetabaseAPI) -> None:
     ensure_dashboard(api, name="Sales Report", collection_id=sales, card_id=weekly_sales)
 
     # Scenario 2: Customer Usage dashboard filtered to the last 7 days (XLSX)
-    usage_field = wait_for_field(api, db_id, "product", "usage_metrics_daily", "usage_date")
-    tag_id = "4d1f6a2e-9d0b-4c55-8f55-2b6f1c1a7e01"
-    usage_param = {
-        "id": tag_id,
-        "name": "Usage Date",
-        "slug": "usage_date",
-        "type": "date/all-options",
-        "target": ["dimension", ["template-tag", "usage_date"]],
-    }
     customer_success = ensure_collection(api, "Customer Success")
-    usage_card = ensure_card(
+    usage_date = FieldFilter(
+        "usage_date",
+        "Usage Date",
+        field("product", "usage_metrics_daily", "usage_date"),
+        "date/all-options",
+    )
+    usage_card = filtered_card(
         api,
         name="Daily Customer Usage",
         collection_id=customer_success,
         db_id=db_id,
         sql=CUSTOMER_USAGE_SQL,
-        template_tags={
-            "usage_date": {
-                "id": tag_id,
-                "name": "usage_date",
-                "display-name": "Usage Date",
-                "type": "dimension",
-                "dimension": ["field", usage_field, None],
-                "widget-type": "date/all-options",
-            }
-        },
-        parameters=[usage_param],
+        filters=[usage_date],
     )
-    dashboard_param_id = "b7c3e0d2"
-    ensure_dashboard(
+    filtered_dashboard(
         api,
         name="Customer Usage",
         collection_id=customer_success,
         card_id=usage_card,
-        parameters=[
-            {
-                "id": dashboard_param_id,
-                "name": "Usage Date",
-                "slug": "usage_date",
-                "type": "date/all-options",
-                "sectionId": "date",
-            }
-        ],
-        parameter_mappings=[
-            {
-                "parameter_id": dashboard_param_id,
-                "card_id": usage_card,
-                "target": ["dimension", ["template-tag", "usage_date"]],
-            }
-        ],
+        filters=[usage_date],
     )
 
     # Scenario 3: Finance Archive -> Q4 Budget Review (JSON)
@@ -325,6 +465,82 @@ def seed(api: MetabaseAPI) -> None:
     ensure_card(
         api, name="Q4 Budget Review", collection_id=finance, db_id=db_id, sql=BUDGET_REVIEW_SQL
     )
+
+    # Support Overview dashboard: date + multi-select category filter (CSV)
+    created_date = FieldFilter(
+        "created_date",
+        "Created Date",
+        field("support", "ticket_daily", "ticket_date"),
+        "date/all-options",
+    )
+    priority = FieldFilter(
+        "priority", "Priority", field("support", "ticket_daily", "priority"), "string/="
+    )
+    tickets_card = filtered_card(
+        api,
+        name="Daily Ticket Volume",
+        collection_id=customer_success,
+        db_id=db_id,
+        sql=SUPPORT_TICKETS_SQL,
+        filters=[created_date, priority],
+    )
+    filtered_dashboard(
+        api,
+        name="Support Overview",
+        collection_id=customer_success,
+        card_id=tickets_card,
+        filters=[created_date, priority],
+    )
+
+    # Marketing Performance dashboard, currency-formatted columns (formatted CSV)
+    marketing = ensure_collection(api, "Marketing")
+    report_date = FieldFilter(
+        "report_date",
+        "Report Date",
+        field("marketing", "campaign_daily", "report_date"),
+        "date/all-options",
+    )
+    campaigns_card = filtered_card(
+        api,
+        name="Campaign Performance",
+        collection_id=marketing,
+        db_id=db_id,
+        sql=CAMPAIGNS_SQL,
+        filters=[report_date],
+        visualization_settings=_currency("Spend", "Revenue"),
+    )
+    filtered_dashboard(
+        api,
+        name="Marketing Performance",
+        collection_id=marketing,
+        card_id=campaigns_card,
+        filters=[report_date],
+    )
+
+    # Hourly Web Traffic question with a date-time filter (CSV)
+    hour_start = FieldFilter(
+        "hour_start", "Hour", field("web", "traffic_hourly", "hour_start"), "date/all-options"
+    )
+    filtered_card(
+        api,
+        name="Hourly Web Traffic",
+        collection_id=marketing,
+        db_id=db_id,
+        sql=WEB_TRAFFIC_SQL,
+        filters=[hour_start],
+    )
+
+    # Operations: today's inventory snapshot with nested supplier JSON (JSON)
+    operations = ensure_collection(api, "Operations")
+    ensure_card(
+        api, name="Inventory Snapshot", collection_id=operations, db_id=db_id, sql=INVENTORY_SQL
+    )
+
+    # Finance Archive: SaaS Metrics dashboard -> MRR Movements (XLSX)
+    mrr_card = ensure_card(
+        api, name="MRR Movements", collection_id=finance, db_id=db_id, sql=MRR_SQL
+    )
+    ensure_dashboard(api, name="SaaS Metrics", collection_id=finance, card_id=mrr_card)
     log.info("Metabase demo content is ready")
 
 
