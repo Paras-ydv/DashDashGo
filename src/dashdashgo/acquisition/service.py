@@ -94,7 +94,10 @@ class AcquisitionService:
                     handle.message = adapter.apply_filters(page)
                 with self._step(tracker, ctx, page, "download", number, report) as handle:
                     path = adapter.download(page, download_dir)
-                    handle.message = path.name
+                    stored_name = report.source.export.stored_filename(ctx.run.run_date, path.name)
+                    handle.message = (
+                        path.name if stored_name == path.name else f"{path.name} -> {stored_name}"
+                    )
                 with self._step(tracker, ctx, page, "validate", number, report) as handle:
                     info = validate_download(path, report.source.export.format)
                     handle.message = f"{info.size:,} bytes, sha256 {info.sha256[:12]}"
@@ -104,8 +107,10 @@ class AcquisitionService:
             finally:
                 self._finish_trace(session, ctx, number, failed)
 
-        key = ctx.artifacts.key("raw", path.name)
+        key = ctx.artifacts.key("raw", stored_name)
         self._storage.put_file(path, key)
+        if stored_name != path.name:
+            log.info("Stored %s as %s", path.name, stored_name)
         return AcquiredReport(path, key, info.size, info.sha256, number)
 
     @contextmanager

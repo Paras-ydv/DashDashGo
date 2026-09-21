@@ -18,7 +18,7 @@ from playwright.sync_api import Locator, Page, expect
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from dashdashgo.acquisition.adapters.base import DashboardAdapter
-from dashdashgo.config.models import BrowserConfig, MetabaseSource
+from dashdashgo.config.models import BrowserConfig, FilterItem, MetabaseSource
 from dashdashgo.errors import (
     AuthenticationError,
     ConfigurationError,
@@ -31,6 +31,11 @@ log = logging.getLogger(__name__)
 
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 _ITEM_GRACE_MS = 10_000
+_RELATIVE_DATE = re.compile(r"past(\d+)(minutes|hours|days|weeks|months|quarters|years)")
+
+
+class _WidgetUnavailable(Exception):  # noqa: N818 - internal control-flow signal
+    """A filter widget cannot be operated for this value; ``auto`` mode falls back to the URL."""
 
 
 class MetabaseAdapter(DashboardAdapter):
@@ -162,30 +167,130 @@ class MetabaseAdapter(DashboardAdapter):
             "Opened '%s' via %s", self.location.target_name, " / ".join(self.location.collection)
         )
 
+    # --- filters ------------------------------------------------------------------
+
     def apply_filters(self, page: Page) -> str:
-        filters = self.source.filters
-        if filters:
-            parts = urlsplit(page.url)
-            query = parse_qs(parts.query)
-            query.update({k: v if isinstance(v, list) else [v] for k, v in filters.items()})
-            page.goto(urlunsplit(parts._replace(query=urlencode(query, doseq=True))))
+        items = self.source.filter_items()
+        method = "none"
+        if items:
+            mode = self.source.filter_mode
+            if mode == "url" or not self.location.dashboard:
+                self._apply_via_url(page, items)
+                method = "url"
+            elif mode == "widget":
+                try:
+                    self._apply_via_widgets(page, items)
+                except _WidgetUnavailable as exc:
+                    raise ConfigurationError(
+                        f"{exc} (use filter_mode: auto or url for this filter)"
+                    ) from None
+                method = "widget"
+            else:  # auto: behave like a user, fall back to URL parameters if a widget fails
+                try:
+                    self._apply_via_widgets(page, items)
+                    self._wait_for_results(page)
+                    self._verify_filters(page, items)
+                    method = "widget"
+                except (_WidgetUnavailable, PlaywrightTimeoutError, NavigationError) as exc:
+                    log.warning("Filter widgets could not be used (%s); applying via URL", exc)
+                    self._apply_via_url(page, items)
+                    method = "url (widget fallback)"
+        self._wait_for_results(page)
+        if items:
+            self._verify_filters(page, items)
+        description = ", ".join(f"{i.slug}={','.join(i.values)}" for i in items) or "none"
+        if items:
+            log.info("Results loaded (filters: %s; applied via %s)", description, method)
+        else:
+            log.info("Results loaded (no filters)")
+        return f"{description} via {method}" if items else description
+
+    def _wait_for_results(self, page: Page) -> None:
         try:
             self._results(page).wait_for(state="visible")
         except PlaywrightTimeoutError as exc:
             raise NavigationError("report results did not load") from exc
-        if filters:
-            # Metabase drops parameters it does not know once the page has loaded; a
-            # missing slug means a config typo, and silently downloading unfiltered
-            # data would be wrong.
-            applied = parse_qs(urlsplit(page.url).query)
-            if unknown := sorted(set(filters) - set(applied)):
-                raise ConfigurationError(
-                    f"'{self.location.target_name}' has no filter(s) {unknown}; "
-                    "check source.filters"
+
+    def _apply_via_url(self, page: Page, items: list[FilterItem]) -> None:
+        parts = urlsplit(page.url)
+        query = parse_qs(parts.query, keep_blank_values=True)
+        query.update({item.slug: item.values for item in items})
+        page.goto(urlunsplit(parts._replace(query=urlencode(query, doseq=True))))
+
+    def _verify_filters(self, page: Page, items: list[FilterItem]) -> None:
+        """The URL mirrors the dashboard's filter state, whichever way it was set."""
+        applied = parse_qs(urlsplit(page.url).query, keep_blank_values=True)
+        # Metabase drops parameters it does not know; a missing slug is a config typo,
+        # and silently downloading unfiltered data would be wrong.
+        if unknown := sorted(i.slug for i in items if i.slug not in applied):
+            raise ConfigurationError(
+                f"'{self.location.target_name}' has no filter(s) {unknown}; check source.filters"
+            )
+        for item in items:
+            if sorted(applied[item.slug]) != sorted(item.values):
+                raise NavigationError(
+                    f"filter '{item.slug}' shows {applied[item.slug]}, expected {item.values}"
                 )
-        description = ", ".join(f"{k}={v}" for k, v in filters.items()) or "none"
-        log.info("Results loaded (filters: %s)", description)
-        return description
+        configured = {i.slug for i in items}
+        if others := {k: v for k, v in applied.items() if k not in configured and any(v)}:
+            # Metabase remembers each user's last filter values per dashboard.
+            log.warning("Dashboard has other active filters not in the config: %s", others)
+
+    def _apply_via_widgets(self, page: Page, items: list[FilterItem]) -> None:
+        for item in items:
+            widget = page.locator(self.sel.parameter_widget).filter(
+                has=page.get_by_role("button", name=item.label, exact=True)
+            )
+            if widget.count() == 0:
+                raise _WidgetUnavailable(f"no filter widget labelled '{item.label}'")
+            clear = widget.get_by_role("button", name="Clear")
+            if clear.count():
+                clear.click()
+                expect(clear).to_have_count(0)
+            widget.locator(self.sel.parameter_widget_target).click()
+            dialog = page.get_by_role("dialog", name=item.label)
+            dialog.wait_for(state="visible")
+            if widget.get_by_role("img", name="calendar icon").count():
+                applied = self._choose_relative_date(dialog, item)
+            else:
+                applied = self._choose_values(dialog, item)
+            if not applied:
+                dialog.get_by_role("button", name=re.compile(self.sel.apply_filter_button)).click()
+            dialog.wait_for(state="hidden")
+            log.info("Set filter '%s' to %s in the dashboard UI", item.label, item.values)
+
+    def _choose_relative_date(self, dialog: Locator, item: FilterItem) -> bool:
+        """Pick a relative period; True if Metabase applied it immediately (shortcut)."""
+        match = _RELATIVE_DATE.fullmatch(item.values[0]) if len(item.values) == 1 else None
+        if match is None:
+            raise _WidgetUnavailable(
+                f"date value {item.values} is not a relative period like past7days"
+            )
+        amount, unit = int(match[1]), match[2]
+        shortcut = dialog.get_by_role("button", name=f"Previous {amount} {unit}", exact=True)
+        if shortcut.count():
+            shortcut.click()  # the same click a person makes; shortcuts apply at once
+            return True
+        dialog.get_by_role("button", name=self.sel.relative_date_option).click()
+        dialog.get_by_role("tab", name="Previous").click()
+        dialog.get_by_role("textbox", name="Interval").fill(str(amount))
+        dialog.get_by_role("textbox", name="Unit").click()
+        dialog.page.get_by_role("option", name=unit, exact=True).click()
+        return False
+
+    def _choose_values(self, dialog: Locator, item: FilterItem) -> bool:
+        for value in item.values:
+            checkbox = dialog.get_by_role("checkbox", name=value, exact=True)
+            if checkbox.count() == 0:
+                dialog.get_by_role("textbox", name=self.sel.list_search).fill(value)
+            try:
+                checkbox.wait_for(state="visible", timeout=_ITEM_GRACE_MS)
+            except PlaywrightTimeoutError:
+                raise ConfigurationError(
+                    f"filter '{item.label}' does not offer the value {value!r}"
+                ) from None
+            checkbox.check()
+        return False  # needs "Add filter"
 
     def download(self, page: Page, target_dir: Path) -> Path:
         if self.location.dashboard:

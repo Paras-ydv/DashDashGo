@@ -9,6 +9,8 @@ time, so a typo fails in milliseconds instead of after a 30 second browser run.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from datetime import date
 from enum import StrEnum
 from typing import Annotated, Any, Literal, Self
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -109,6 +111,15 @@ class MetabaseSelectors(StrictModel):
         default_factory=lambda: ["Start exploring", "Got it"],
         description="Buttons that close onboarding/announcement modals if they appear",
     )
+    # Dashboard filter widgets (filter_mode: widget / auto)
+    parameter_widget: str = '[data-testid="parameter-widget"]'
+    parameter_widget_target: str = '[data-testid="parameter-value-widget-target"]'
+    relative_date_option: str = "Relative date range…"
+    list_search: str = "Search the list"
+    apply_filter_button: str = r"^(Add|Update) filter$"
+
+
+FILENAME_DATE_TOKEN = "{date}"
 
 
 class ExportOptions(StrictModel):
@@ -116,6 +127,44 @@ class ExportOptions(StrictModel):
     formatted: bool = Field(
         default=False, description="Metabase 'Keep the data formatted' (locale-formatted values)"
     )
+    filename: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9._{}-]+$",
+        description="Name to store the raw download under, e.g. Weekly_Sales.csv; "
+        "'{date}' is replaced by the run date. Default: the dashboard's own file name",
+    )
+
+    @model_validator(mode="after")
+    def _filename_matches_format(self) -> Self:
+        if self.filename is None:
+            return self
+        if re.search(r"[{}]", self.filename.replace(FILENAME_DATE_TOKEN, "")):
+            raise ValueError(f"filename: only the {FILENAME_DATE_TOKEN} token is supported")
+        if not self.filename.lower().endswith(f".{self.format.value}"):
+            raise ValueError(f"filename must end with .{self.format.value} to match the format")
+        return self
+
+    def stored_filename(self, run_date: date, downloaded_name: str) -> str:
+        if self.filename is None:
+            return downloaded_name
+        return self.filename.replace(FILENAME_DATE_TOKEN, run_date.isoformat())
+
+
+class FilterSpec(StrictModel):
+    """Long form of a filter: value(s) plus the label shown on the dashboard widget."""
+
+    value: str | list[str]
+    label: str | None = Field(
+        default=None,
+        description="Widget label; default: slug in title case (usage_date -> Usage Date)",
+    )
+
+
+@dataclass(frozen=True)
+class FilterItem:
+    slug: str
+    values: list[str]
+    label: str
 
 
 class MetabaseSource(StrictModel):
@@ -124,9 +173,15 @@ class MetabaseSource(StrictModel):
     login_path: str = "/auth/login"
     credentials: Credentials
     location: MetabaseLocation
-    filters: dict[str, str | list[str]] = Field(
+    filters: dict[str, str | list[str] | FilterSpec] = Field(
         default_factory=dict,
-        description="Dashboard/question parameter slug -> value, e.g. {usage_date: past7days}",
+        description="Parameter slug -> value(s), e.g. {usage_date: past7days, priority: [High]}",
+    )
+    filter_mode: Literal["auto", "widget", "url"] = Field(
+        default="auto",
+        description="widget: operate the dashboard's filter widgets like a user | url: set the "
+        "parameters in the URL | auto: widgets, falling back to the URL if a widget can't be "
+        "operated. The applied filters are verified in every mode.",
     )
     export: ExportOptions
     selectors: MetabaseSelectors = Field(default_factory=MetabaseSelectors)
@@ -135,6 +190,22 @@ class MetabaseSource(StrictModel):
     @classmethod
     def _strip_slash(cls, value: str) -> str:
         return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def _widgets_need_a_dashboard(self) -> Self:
+        if self.filter_mode == "widget" and self.filters and not self.location.dashboard:
+            raise ValueError(
+                "filter_mode 'widget' needs a dashboard; questions support 'url' or 'auto'"
+            )
+        return self
+
+    def filter_items(self) -> list[FilterItem]:
+        items = []
+        for slug, spec in self.filters.items():
+            raw, label = (spec.value, spec.label) if isinstance(spec, FilterSpec) else (spec, None)
+            values = [raw] if isinstance(raw, str) else list(raw)
+            items.append(FilterItem(slug, values, label or slug.replace("_", " ").title()))
+        return items
 
 
 # To support another dashboard tool, add its model here and turn this alias into

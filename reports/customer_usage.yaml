@@ -22,8 +22,13 @@ source:
     card: Daily Customer Usage
   filters:
     usage_date: past7days     # Metabase relative-date syntax for "Previous 7 days"
+  # auto: click the dashboard's "Usage Date" widget and pick "Previous 7 days" like a
+  # user would; if the widget can't be operated, set the URL parameter instead.
+  # Either way the applied filter is verified before downloading.
+  filter_mode: auto
   export:
     format: xlsx
+    filename: Customer_Usage_7Day.xlsx
 
 ingestion:
   reader:

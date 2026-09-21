@@ -34,13 +34,16 @@
         <li><code>{{ src.base_url }}</code></li>
         <li>{{ (src.location.collection + [src.location.target_name] + ([src.location.card] if src.location.card else []))|join(" › ") }}</li>
         <li>Signed in as {{ src.credentials.username }}</li>
-        {% for k, v in src.filters.items() %}<li>Filter <code>{{ k }}={{ v }}</code></li>{% endfor %}
+        {% for f in src.filter_items() %}<li>Filter <code>{{ f.slug }}={{ f.values|join(",") }}</code></li>{% endfor %}
+        {% if src.filters %}<li>Filters applied via {{ {"auto": "widgets (URL fallback)", "widget": "dashboard widgets", "url": "URL parameters"}[src.filter_mode] }}</li>{% endif %}
       </ul>
     </div>
     <div class="flow-step">
       <div class="flow-kicker"><span class="idx">02</span>Acquire</div>
       <div class="flow-title">Download {{ src.export.format.value|upper }}</div>
       <ul>
+        {% if src.export.filename %}<li>Stored as <code>{{ src.export.filename }}</code></li>{% endif %}
+        {% if src.export.formatted %}<li>Formatted export (locale numbers &amp; dates)</li>{% endif %}
         <li>{{ config.browser.engine }}, {{ "headless" if config.browser.headless else "headed" }}</li>
         <li>Timeouts {{ config.browser.timeout_ms // 1000 }}s / download {{ config.browser.download_timeout_ms // 1000 }}s</li>
         <li>Up to {{ config.retry.max_attempts }} attempts, backoff ×{{ config.retry.backoff_multiplier|round(1) }}</li>

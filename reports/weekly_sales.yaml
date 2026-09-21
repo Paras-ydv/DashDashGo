@@ -19,6 +19,7 @@ source:
   export:
     format: csv
     formatted: false          # raw ISO dates / plain numbers instead of "September 14, 2026"
+    filename: Weekly_Sales.csv
 
 browser:
   headless: true

@@ -133,3 +133,68 @@ def test_registry_load_all_separates_invalid(
     valid, invalid = ReportRegistry(path.parent, TEST_ENV).load_all()
     assert list(valid) == ["sample_report"]
     assert list(invalid) == ["broken_report"]
+
+
+# --- export filename and filter modes ------------------------------------------------
+
+
+def test_export_filename_tokens_and_extension(
+    config_dict: dict[str, Any], make_config: MakeConfig
+) -> None:
+    from datetime import date
+
+    config_dict["source"]["export"]["filename"] = "Weekly_Sales_{date}.csv"
+    export = make_config(config_dict).source.export
+    assert export.stored_filename(date(2026, 9, 21), "x.csv") == "Weekly_Sales_2026-09-21.csv"
+    config_dict["source"]["export"].pop("filename")
+    assert (
+        make_config(config_dict).source.export.stored_filename(date(2026, 9, 21), "x.csv")
+        == "x.csv"
+    )
+
+
+@pytest.mark.parametrize(
+    ("filename", "message"),
+    [
+        ("Weekly_Sales.xlsx", "must end with .csv"),
+        ("Weekly_{run}.csv", "only the {date} token"),
+        ("../escape.csv", "filename"),
+        ("with space.csv", "filename"),
+    ],
+)
+def test_invalid_export_filenames(
+    config_dict: dict[str, Any], make_config: MakeConfig, filename: str, message: str
+) -> None:
+    config_dict["source"]["export"]["filename"] = filename
+    with pytest.raises(ConfigurationError) as info:
+        make_config(config_dict)
+    assert message in info.value.message
+
+
+def test_filters_short_and_long_form(config_dict: dict[str, Any], make_config: MakeConfig) -> None:
+    config_dict["source"]["filters"] = {
+        "usage_date": "past7days",
+        "priority": ["High", "Urgent"],
+        "region_code": {"value": "EU", "label": "Region"},
+    }
+    items = make_config(config_dict).source.filter_items()
+    assert sorted((i.slug, i.values, i.label) for i in items) == sorted(
+        [
+            ("usage_date", ["past7days"], "Usage Date"),
+            ("priority", ["High", "Urgent"], "Priority"),
+            ("region_code", ["EU"], "Region"),
+        ]
+    )
+    assert make_config(config_dict).source.filter_mode == "auto"
+
+
+def test_widget_mode_requires_a_dashboard(
+    config_dict: dict[str, Any], make_config: MakeConfig
+) -> None:
+    config_dict["source"]["location"] = {"collection": ["Ops"], "question": "Inventory"}
+    config_dict["source"]["filters"] = {"day": "past7days"}
+    config_dict["source"]["filter_mode"] = "widget"
+    with pytest.raises(ConfigurationError, match="needs a dashboard"):
+        make_config(config_dict)
+    config_dict["source"]["filter_mode"] = "auto"
+    make_config(config_dict)  # questions fall back to URL parameters
