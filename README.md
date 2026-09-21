@@ -30,6 +30,8 @@ A new report is a YAML file, not new code.
 - [Project structure](#project-structure)
 - [Configuration](#configuration)
 - [Adding a new report](#adding-a-new-report)
+- [Managing pipelines in the UI](#managing-pipelines-in-the-ui)
+- [Command line](#command-line)
 - [Running pipelines](#running-pipelines)
 - [UI and API](#ui-and-api)
 - [Reliability: errors, retries, screenshots, logs](#reliability-errors-retries-screenshots-logs)
@@ -37,7 +39,7 @@ A new report is a YAML file, not new code.
 - [ClickHouse schema design](#clickhouse-schema-design)
 - [Storage](#storage)
 - [Security](#security)
-- [Testing](#testing)
+- [Testing and CI](#testing-and-ci)
 - [Design decisions and trade-offs](#design-decisions-and-trade-offs)
 - [Limitations](#limitations)
 - [Future improvements](#future-improvements)
@@ -98,8 +100,10 @@ The assignment's three scenarios, fully automated against a local Metabase:
 - **Idempotency:** a content fingerprint skips repeat loads, and ReplacingMergeTree handles rows re-delivered in overlapping windows.
 - **Run metadata:** a live per-stage timeline, structured per-run logs, and raw, processed and failure artifacts organised by `report/date/run`.
 - **Execution:** manual (CLI), on demand (UI/API), retry, and cron scheduling. All four go through the same orchestrator, with a per-report lock.
+- **Pipeline management in the UI:** create, edit (live validation, errors mapped to lines), duplicate, version history and restore, and archive, with conflict protection and a guarantee that secrets stay in environment variables.
+- **A complete CLI:** everything the UI does, plus per-run overrides (`--set key=value`, `--headed`, `--no-retry`, `--config FILE`).
 - **UI and API:** an operations UI (overview, pipeline page, run history, run detail with timeline, screenshots, logs and retry) and a JSON API that serves ingested data as JSON or CSV.
-- **Quality gates:** 134 unit tests, 8 ClickHouse integration tests and 9 end-to-end tests, plus `ruff` and `mypy --strict`.
+- **Quality gates:** 159 unit tests, 8 ClickHouse integration tests and 9 end-to-end tests, plus `ruff` and `mypy --strict`, all run by GitHub Actions CI.
 
 ---
 
@@ -161,9 +165,10 @@ the run executes.
 
 ```
 .
-├── reports/                    # one YAML per pipeline - the only thing you edit to add a report
+├── .github/workflows/ci.yml    # lint + types + unit, ClickHouse integration, Compose e2e
+├── reports/                    # one YAML per pipeline (edit here, in the UI or via the CLI)
 ├── src/dashdashgo/
-│   ├── config/                 # typed config models (Pydantic) + YAML loader with ${ENV} interpolation
+│   ├── config/                 # typed models, YAML loader (${ENV}, --set overrides), versioned store
 │   ├── acquisition/
 │   │   ├── adapters/           # DashboardAdapter interface + MetabaseAdapter
 │   │   ├── browser.py          # Playwright browser/context lifecycle, tracing
@@ -185,7 +190,7 @@ the run executes.
 │   ├── columns.py              # the supported ClickHouse type model
 │   ├── errors.py               # exception hierarchy (retryable? which stage?)
 │   ├── container.py            # composition root
-│   └── cli.py                  # dashdashgo run | validate | list | schema | serve | prune | init-db
+│   └── cli/                    # dashdashgo run | runs | show | logs | retry | data | stats | config ...
 ├── demo/metabase_seed.py       # creates the demo Metabase content (test environment only)
 ├── docker/postgres/init/       # demo "upstream warehouse" behind Metabase (test environment only)
 ├── tests/{unit,integration,e2e}/
@@ -311,8 +316,13 @@ No Python changes are needed for a new report on a supported dashboard and forma
 
 1. **Build or locate the report** in the dashboard, and note its collection path, dashboard
    and card (or question) name, and any filter slugs.
-2. **Create `reports/<name>.yaml`.** Copy the closest existing report and change `source`
-   and `destination`.
+2. **Create the config**, whichever way suits you:
+   - **UI:** *New pipeline* (blank template or *Copy of* an existing report), or *Duplicate*
+     on a pipeline page. The editor validates as you type.
+   - **CLI:** `dashdashgo config new <name> --from weekly_sales --edit` (opens `$EDITOR`,
+     and re-opens it until the config validates).
+   - **File:** add `reports/<name>.yaml` and run `dashdashgo config import reports/<name>.yaml`
+     (or just drop the file into the reports directory when running from source).
 3. **Describe the destination schema.** Pick real types (`Decimal` for money, `Date` for
    days, `LowCardinality(String)` for low-cardinality categories). Set `order_by` to the
    columns that uniquely identify a row.
@@ -325,9 +335,9 @@ No Python changes are needed for a new report on a supported dashboard and forma
    docker compose exec app dashdashgo schema <name>     # the CREATE TABLE it will run
    ```
 6. **Run it:** `make run REPORT=<name>`, or press *Run* in the UI. The table is created on
-   the first run (`destination.create_table: true`). The report directory is mounted into the
-   container and re-read on every run, so no rebuild is needed. Schedules are re-synced every
-   5 minutes.
+   the first run (`destination.create_table: true`). Configs are re-read on every run, so no
+   restart or rebuild is needed. Saving in the UI re-syncs schedules immediately; file edits
+   are picked up within 5 minutes.
 
 **Extension points, when configuration is not enough:**
 
@@ -341,13 +351,87 @@ No Python changes are needed for a new report on a supported dashboard and forma
 
 ---
 
+## Managing pipelines in the UI
+
+The UI is a full management surface, not just a viewer: **New pipeline** in the sidebar,
+**Edit config** and **Duplicate** on every pipeline page, and **Fix** next to any invalid
+config on the overview.
+
+- **Editor:** YAML with line numbers. It validates as you type, using exactly the rules a
+  run uses (structure, types, cron, transforms, quality rules, env vars). Every problem is
+  listed with its location, and clicking it jumps to the line.
+- **Summary before saving:** source path, destination table (and whether it already exists),
+  transforms, rules, schedule and the generated DDL.
+- **Warnings:** you're told if the edit would *drift an existing table* (runs would fail
+  preflight until it's migrated), or if *another pipeline already writes to the same table*.
+- **Safe saves:** each save is checked against the version you opened (optimistic
+  concurrency, so a stale editor can't overwrite a newer change) and written atomically. The
+  previous version goes to `reports/.history/<name>/` and can be loaded back from the
+  editor's *History* panel.
+- **Archive, not delete:** the file moves to `reports/.archive/`, the schedule is removed,
+  and run history stays.
+- **Secrets stay out:** any `password` / `token` / `secret` / `api_key` value must be an
+  `${ENV_VAR}` reference; a plaintext secret is rejected with a pointer to the line. The
+  editor only ever shows raw YAML, which therefore never contains secret values.
+
+In Docker, configs live on the `app-reports` volume at `/data/reports`. It's seeded from
+`./reports` on first start and keeps UI/CLI edits across restarts and rebuilds.
+`make export-reports` copies the edited configs back into the repository.
+
+The editor is backed by a small API (`/api/reports/{name}/config`, `.../validate`,
+`.../history`, `POST /api/reports`, `DELETE /api/reports/{name}`), so the same operations can
+be scripted.
+
+---
+
+## Command line
+
+Everything the UI can do is available from a terminal: locally (`uv run dashdashgo ...`),
+in the container (`docker compose exec app dashdashgo ...`), from cron, or in CI.
+
+```text
+run      <report> | --config FILE   run now and wait; exit 0 = success/skipped, 1 = failed, 2 = config error
+           --set key.path=value     override any config value for this run only (repeatable)
+           --headed --no-retry      watch the browser; single attempt
+           --timeout SECONDS        browser step timeout
+           --force  --json          reload identical data; machine-readable result
+runs     [--report R] [--status failed] [--limit N] [--json]
+show     <run_id> [--json]          status, timeline incl. per-attempt browser steps, artifacts
+logs     <run_id> [--level WARNING] [--follow]
+retry    <run_id> [--force]
+data     <report> [--since D] [--until D] [--limit N] [--format table|csv|json] [--lineage]
+stats    [--days 7]
+list | validate [<report>...] [--file FILE] | schema <report>
+config   show | edit | new [--from R] [--edit] | import FILE|- [--name] | history | restore | archive
+serve    [--host] [--port] [--no-scheduler]
+init-db | prune [--days N]
+```
+
+```bash
+$ dashdashgo run customer_usage --set source.filters.usage_date=past30days --no-retry
+✓ SUCCESS  run=20260921-212702-4fed0d  report=customer_usage  duration=6.2 s  downloaded=1200  rejected=0  inserted=300
+Details: dashdashgo show 20260921-212702-4fed0d
+
+$ dashdashgo data weekly_sales --limit 2
+report_date  region  product             category     orders  units_sold  revenue
+-----------  ------  ------------------  -----------  ------  ----------  -------
+2026-09-14   East    Aurora Desk Lamp    Home Office      10          10   431.20
+2026-09-14   East    Echo Desk Speakers  Audio             2           2   180.18
+```
+
+Overrides are applied *before* validation (an invalid value is rejected exactly like a bad
+file) and are written to the run's log, so a run's inputs are always traceable. Output is
+coloured on a terminal and plain when piped or when `NO_COLOR` is set.
+
+---
+
 ## Running pipelines
 
 The same orchestrator runs regardless of how a run is triggered:
 
 | Trigger | How | Recorded as |
 |---|---|---|
-| Manual | `dashdashgo run <report> [--force] [--json]` (exit code 0 = success or skipped) | `cli` |
+| Manual | `dashdashgo run <report>` with optional overrides (see [Command line](#command-line)) | `cli` |
 | On demand | UI **Run now** / `POST /api/reports/{name}/runs?force=` | `api` |
 | Retry | UI **Retry** on a finished run / `POST /api/runs/{id}/retry` | `retry` (linked to the parent run) |
 | Scheduled | `schedule.cron` + `schedule.timezone` in the report YAML | `schedule` |
@@ -363,8 +447,6 @@ The same orchestrator runs regardless of how a run is triggered:
 - **Restarts:** when the server restarts, runs it was executing are marked FAILED
   ("interrupted") so nothing stays RUNNING forever.
 
-Other CLI commands: `validate`, `list`, `schema <report>`, `serve`, `init-db`, `prune [--days N]`.
-
 ---
 
 ## UI and API
@@ -377,7 +459,8 @@ Other CLI commands: `validate`, `list`, `schema <report>`, `serve`, `init-db`, `
 - **Pipeline:** the pipeline's stages derived from its config (source → acquire → transform
   → validate → load and distribute), statistics, a run-duration chart, run history, a live
   data preview of the table, the masked configuration and the generated DDL. It has
-  **Run now** and **Force reload** buttons.
+  **Run now**, **Force reload**, **Edit config** and **Duplicate** buttons.
+- **Config editor:** see [Managing pipelines in the UI](#managing-pipelines-in-the-ui).
 - **Run detail:** status and error panel, **failure screenshots**, a live **timeline** of
   stages with per-attempt acquisition steps, results (row counts, hashes), artifacts,
   **filterable logs**, and **Retry**. The page refreshes itself while the run is in progress.
@@ -597,10 +680,10 @@ incrementally (the run log) can be uploaded when they close.
 
 ---
 
-## Testing
+## Testing and CI
 
 ```bash
-make test              # unit tests (134): no infrastructure needed, about 3 s
+make test              # unit tests (159): no infrastructure needed, about 3 s
 make test-integration  # Python <-> ClickHouse (8): needs the stack running
 make test-e2e          # Metabase -> Playwright -> ClickHouse (9), inside the app container
 make test-all          # everything, inside the app container
@@ -609,12 +692,20 @@ make lint              # ruff check + ruff format --check + mypy --strict
 
 | Suite | Covers |
 |---|---|
-| **unit** | config validation (18 invalid cases, env interpolation), readers (BOM, delimiters, sheets, nested JSON, malformed input), every transform, type coercion (ranges, decimals, dates, time zones, nulls), quality policies, fingerprinting, retry and backoff classification, storage and traversal safety, log redaction and per-run log isolation, download validation, the orchestrator end to end with fakes (success, skip, force, retry, failure, bugs), **real headless-Chromium acquisition** with a scripted adapter (retry + screenshot, no retry on auth failure), runner locking, scheduler wiring and cron semantics, API and UI rendering |
+| **unit** | config validation (18 invalid cases, env interpolation), readers (BOM, delimiters, sheets, nested JSON, malformed input), every transform, type coercion (ranges, decimals, dates, time zones, nulls), quality policies, fingerprinting, retry and backoff classification, storage and traversal safety, log redaction and per-run log isolation, download validation, the orchestrator end to end with fakes (success, skip, force, retry, failure, bugs), **real headless-Chromium acquisition** with a scripted adapter (retry + screenshot, no retry on auth failure), runner locking, scheduler wiring and cron semantics, API and UI rendering, config store (versioning, conflicts, history, secret guard), config API, CLI commands and `--set` overrides |
 | **integration** | table creation and drift detection, typed round trip, ReplacingMergeTree + `FINAL`, insert-token dedup, metadata repository, restart recovery |
 | **e2e** | all three scenarios against the seeded Metabase; cleaning verified on real exports; duplicate run → SKIPPED; wrong password → 1 attempt, screenshot, no secret in artifacts; missing dashboard → not retried; unknown filter slug → ConfigurationError; unreachable dashboard → retried, then FAILED |
 
 E2E tests write to a throwaway ClickHouse database and storage directory and drop them
 afterwards.
+
+**CI** (`.github/workflows/ci.yml`) runs on every push and pull request:
+
+| Job | What |
+|---|---|
+| `quality` | ruff, format check, `mypy --strict`, validates the shipped configs, unit tests with Playwright Chromium installed (so the real-browser tests run) |
+| `integration` | the ClickHouse integration suite against a `clickhouse-server:25.8` service container |
+| `e2e` | `docker compose up --build` exactly as an evaluator would, waits for health, runs the e2e suite inside the app container, smoke-tests the CLI and API, and dumps service logs on failure |
 
 ---
 
@@ -630,6 +721,8 @@ afterwards.
 | **Metadata in ClickHouse** | No extra database; the monitoring data lives next to the data it describes | ReplacingMergeTree + `FINAL` instead of real updates; fine at metadata scale |
 | **Scheduler in the API process, per-report `flock`** | Simple, one container, same code path as manual runs | One scheduler instance; horizontal scaling needs an external scheduler or queue |
 | **Server-rendered UI (Jinja + a little vanilla JS)** | No build chain, no CDN, one language, fast to review | Less interactive than an SPA; live updates use polling |
+| **Config editing = raw YAML, validated live** | One representation for files, UI, CLI and review; the full config surface is available without a form for every option | Users edit YAML rather than fill a form; the live validation and line-mapped errors make up most of the difference |
+| **Configs on a Docker volume** | UI/CLI edits persist and the non-root app user can write them on any host OS | Edits live in the volume, not the git checkout; `make export-reports` brings them back |
 | **Postgres behind the demo Metabase** | Metabase's own app DB plus a small upstream warehouse whose data is generated *relative to today*, so "last week" and "last 7 days" always have data and re-downloads are byte-stable | One extra container, used only by the demo environment |
 | **`python:3.12-slim` + Chromium only** | Only the browser actually used; runs as non-root | Image is still about 2.9 GB (Chromium + its system libraries + pandas/pyarrow) |
 
@@ -652,6 +745,8 @@ These are known limitations, not hidden ones:
   millions of rows). Streaming or chunked parsing would be needed for bigger files.
 - **Retention prunes files, not ClickHouse rows or run metadata.**
 - **Local storage only**; S3 is an interface away, not implemented.
+- **Config history is file-based** (`reports/.history`), per instance, and not tied to a
+  user. With UI authentication, saves could record who changed what.
 
 ---
 
@@ -662,7 +757,8 @@ These are known limitations, not hidden ones:
 - A distributed execution model (queue + workers such as Celery/RQ/Arq) with a database-backed
   lock.
 - Alerting on failures (Slack/email/webhooks) and Prometheus metrics.
-- Config editing and dry-run preview in the UI.
+- A "dry run" mode (download + transform + validate, no load) from the editor.
+- Authenticated UI/API with per-user audit of config changes.
 - Schema migrations generated from config diffs.
 - AI-assisted recovery: when a selector breaks, use an LLM or vision agent (for example
   browser-use) to propose an updated selector from the failure screenshot and DOM, and have
