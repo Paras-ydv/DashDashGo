@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from html import escape
 from pathlib import Path
 
 from playwright.sync_api import Error as PlaywrightError
@@ -143,19 +145,39 @@ class AcquisitionService:
         if not report.browser.screenshot_on_failure:
             return
         prefix = f"attempt{number}_{step}_failure"
-        try:
-            shot = self._storage.put_bytes(
-                page.screenshot(full_page=True), ctx.artifacts.key("screenshots", f"{prefix}.png")
-            )
+        # After a failed navigation Chromium is still swapping in its error page;
+        # reading the DOM mid-navigation fails, so let it settle first (best effort).
+        with suppress(PlaywrightError):
+            page.wait_for_load_state("load", timeout=5_000)
+        # Each piece of evidence is captured independently: one failing must
+        # not cost us the other.
+        html_key = self._store_evidence(
+            "page HTML",
             # The DOM can hold typed form values (e.g. the password field).
-            html = self._storage.put_bytes(
-                redactor.redact(page.content()).encode(),
-                ctx.artifacts.key("failures", f"{prefix}.html"),
-            )
-            error.artifacts.extend([shot.key, html.key])
-            log.info("Saved failure screenshot %s (page: %s)", shot.key, page.url)
+            lambda: redactor.redact(page.content()).encode(),
+            ctx.artifacts.key("failures", f"{prefix}.html"),
+        )
+
+        def screenshot() -> bytes:
+            if _page_is_blank(page):
+                # Nothing rendered (DNS failure, connection refused, ...): a white
+                # screenshot is useless evidence, so draw what happened instead.
+                page.set_content(_diagnostic_html(report, step, number, page.url, error))
+            return page.screenshot(full_page=True)
+
+        shot_key = self._store_evidence(
+            "screenshot", screenshot, ctx.artifacts.key("screenshots", f"{prefix}.png")
+        )
+        error.artifacts.extend(key for key in (shot_key, html_key) if key)
+        if shot_key:
+            log.info("Saved failure screenshot %s (page: %s)", shot_key, page.url)
+
+    def _store_evidence(self, what: str, produce: Callable[[], bytes], key: str) -> str | None:
+        try:
+            return self._storage.put_bytes(produce(), key).key
         except (PlaywrightError, StorageError) as exc:
-            log.warning("Could not capture failure evidence: %s", _first_line(exc))
+            log.warning("Could not capture failure %s: %s", what, _first_line(exc))
+            return None
 
     def _finish_trace(
         self, session: BrowserSession, ctx: RunContext, number: int, failed: bool
@@ -168,6 +190,49 @@ class AcquisitionService:
             key = ctx.artifacts.key("failures" if failed else "logs", saved.name)
             self._storage.put_file(saved, key)
             log.info("Saved Playwright trace %s (open with `playwright show-trace`)", key)
+
+
+def _page_is_blank(page: Page) -> bool:
+    """True when the browser shows nothing: no text and no visual elements."""
+    if page.url in ("", "about:blank"):
+        return True
+    result: bool = page.evaluate(
+        "() => !document.body || (document.body.innerText.trim() === ''"
+        " && !document.querySelector('img, svg, canvas, video, iframe'))"
+    )
+    return result
+
+
+def _diagnostic_html(
+    report: ReportConfig, step: str, attempt: int, page_url: str, error: DashDashGoError
+) -> str:
+    rows = [
+        ("Report", report.name),
+        ("Step", f"{step} (attempt {attempt})"),
+        ("Dashboard", report.source.base_url),
+        ("Browser URL", page_url or "about:blank"),
+        ("Error", f"{error.error_type}: {redactor.redact(error.message)}"),
+        ("Captured", datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")),
+    ]
+    cells = "".join(
+        f"<tr><th>{escape(label)}</th><td>{escape(value)}</td></tr>" for label, value in rows
+    )
+    return f"""<!doctype html><html><head><meta charset="utf-8"><style>
+body {{ margin: 0; font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+       background: #f6f6f4; color: #151514;
+       display: grid; place-items: center; min-height: 100vh; }}
+.card {{ background: #fff; border: 1px solid #e3e2dd; border-top: 4px solid #d03b3b;
+        border-radius: 10px; padding: 28px 32px; width: 860px; }}
+h1 {{ font-size: 20px; margin: 0 0 4px; }} p {{ margin: 0 0 18px; color: #52514e; }}
+th {{ text-align: left; color: #8a8984; font-weight: 500; padding: 6px 18px 6px 0;
+     vertical-align: top; white-space: nowrap; }}
+td {{ font-family: ui-monospace, Menlo, monospace; font-size: 13px; padding: 6px 0;
+     word-break: break-word; }}
+</style></head><body><div class="card">
+<h1>The page did not load</h1>
+<p>DashDashGo could not render anything at this step, so this card was drawn in the
+browser in place of an empty screenshot.</p>
+<table>{cells}</table></div></body></html>"""
 
 
 def _first_line(exc: BaseException) -> str:

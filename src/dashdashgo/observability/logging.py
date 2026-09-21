@@ -134,8 +134,12 @@ def configure_logging(level: str = "INFO", fmt: str = "text") -> None:
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level.upper())
-    for noisy in ("urllib3", "apscheduler", "clickhouse_connect", "uvicorn.access", "asyncio"):
+    for noisy in ("apscheduler", "uvicorn.access", "asyncio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # Connection failures are reported by our own error handling with context;
+    # the drivers' low-level retry chatter would only duplicate it.
+    for driver in ("urllib3", "clickhouse_connect"):
+        logging.getLogger(driver).setLevel(logging.ERROR)
 
 
 class _RunFilter(logging.Filter):

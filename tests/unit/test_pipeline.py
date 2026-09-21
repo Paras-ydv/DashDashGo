@@ -271,3 +271,38 @@ def test_acquisition_does_not_retry_authentication_errors(
         service.acquire(report, ctx, RunTracker(InMemoryRunRepository(), run))
     assert any("attempt1_login_failure.png" in a for a in info.value.artifacts)
     assert len(storage.list(f"screenshots/{report.name}/")) == 1
+
+
+class BlankPageAdapter(ScriptedAdapter):
+    """Leaves the browser on about:blank, like a dashboard that cannot be reached."""
+
+    def prepare(self, page: Page) -> None:
+        pass
+
+
+@pytest.mark.skipif(chromium_missing, reason="Playwright Chromium not installed")
+def test_blank_failure_page_gets_a_diagnostic_screenshot(
+    tmp_path: Path, report: ReportConfig
+) -> None:
+    storage = LocalStorage(tmp_path / "storage")
+    adapter = BlankPageAdapter([NavigationError("net::ERR_NAME_NOT_RESOLVED") for _ in range(3)])
+    service = AcquisitionService(storage, adapter_factory=lambda _: adapter)
+    run = new_run(report.name)
+    ctx = RunContext(run=run, workdir=tmp_path / "work")
+    ctx.workdir.mkdir()
+    with pytest.raises(NavigationError) as info:
+        service.acquire(report, ctx, RunTracker(InMemoryRunRepository(), run))
+    # Both pieces of evidence exist for every attempt, and the screenshot is not blank.
+    assert len([a for a in info.value.artifacts if a.endswith(".png")]) == 1
+    shots = storage.list(f"screenshots/{report.name}/")
+    assert len(shots) == 3 and all(s.size > 10_000 for s in shots)  # a rendered card, not white
+
+
+def test_diagnostic_card_escapes_error_text(report: ReportConfig) -> None:
+    from dashdashgo.acquisition.service import _diagnostic_html
+
+    html = _diagnostic_html(
+        report, "login", 2, "about:blank", NavigationError("<script>x</script>")
+    )
+    assert "<script>x" not in html and "&lt;script&gt;" in html
+    assert "login (attempt 2)" in html

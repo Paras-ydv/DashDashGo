@@ -1,6 +1,19 @@
 {% extends "base.html" %}
 {% from "macros.html" import icon, status_pill %}
-{% block title %}Run {{ run.run_id }}{% endblock %}
+{% block title %}Run {{ run.run_id }}{# Outside #live-root so a live refresh never closes an open viewer. #}
+<dialog class="lightbox" data-lightbox-dialog aria-label="Failure screenshot">
+  <div class="lightbox-bar">
+    <span class="mono" data-lightbox-caption></span>
+    <span class="actions">
+      <button class="btn btn-sm" type="button" data-lightbox-step="-1" aria-label="Previous screenshot">←</button>
+      <button class="btn btn-sm" type="button" data-lightbox-step="1" aria-label="Next screenshot">→</button>
+      <a class="btn btn-sm" data-lightbox-open target="_blank" rel="noopener">Open original</a>
+      <button class="btn btn-sm btn-primary" type="button" data-lightbox-close aria-label="Close">✕ Close</button>
+    </span>
+  </div>
+  <div class="lightbox-body"><img data-lightbox-img alt=""></div>
+</dialog>
+{% endblock %}
 
 {% macro step_icon(state) -%}
 {%- if state == "success" %}{{ icon("check") }}{% elif state == "failed" %}{{ icon("x") }}{% elif state == "running" %}{{ icon("spinner", "spin") }}{% elif state == "skipped" %}{{ icon("skip") }}{% else %}{{ icon("dot") }}{% endif -%}
@@ -48,7 +61,7 @@
     <div class="card-head"><div><h2>Failure screenshots</h2><p>Captured by the browser at the moment a step failed.</p></div></div>
     <div class="card-body shots">
       {% for shot in screenshots %}
-      <a class="shot" href="/api/artifacts/{{ shot.key }}" target="_blank" rel="noopener"><img src="/api/artifacts/{{ shot.key }}" alt="Screenshot {{ shot.name }}" loading="lazy"><span>{{ shot.name }}</span></a>
+      <a class="shot" href="/api/artifacts/{{ shot.key }}" data-lightbox data-caption="{{ shot.name }}"><img src="/api/artifacts/{{ shot.key }}" alt="Screenshot {{ shot.name }}" loading="lazy"><span>{{ shot.name }}</span></a>
       {% endfor %}
     </div>
   </section>
@@ -138,4 +151,17 @@
   </section>
 </div>
 </div>
+{# Outside #live-root so a live refresh never closes an open viewer. #}
+<dialog class="lightbox" data-lightbox-dialog aria-label="Failure screenshot">
+  <div class="lightbox-bar">
+    <span class="mono" data-lightbox-caption></span>
+    <span class="actions">
+      <button class="btn btn-sm" type="button" data-lightbox-step="-1" aria-label="Previous screenshot">←</button>
+      <button class="btn btn-sm" type="button" data-lightbox-step="1" aria-label="Next screenshot">→</button>
+      <a class="btn btn-sm" data-lightbox-open target="_blank" rel="noopener">Open original</a>
+      <button class="btn btn-sm btn-primary" type="button" data-lightbox-close aria-label="Close">✕ Close</button>
+    </span>
+  </div>
+  <div class="lightbox-body"><img data-lightbox-img alt=""></div>
+</dialog>
 {% endblock %}

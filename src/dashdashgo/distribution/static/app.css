@@ -384,3 +384,12 @@ details.ddl summary { cursor: pointer; font-size: 13px; color: var(--text-2); }
 details.ddl pre.code { border-radius: 8px; margin-top: 8px; max-height: 260px; }
 kbd { font: 11px var(--mono); border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--surface-2); }
 @media (max-width: 1100px) { .editor-layout { grid-template-columns: minmax(0, 1fr); } .editor { height: 60vh; } }
+
+/* ---------- screenshot viewer ---------- */
+dialog.lightbox { width: min(1280px, 94vw); max-height: 92vh; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); overflow: hidden; }
+dialog.lightbox::backdrop { background: rgb(10 10 9 / 0.72); }
+.lightbox-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.lightbox-bar .actions { display: flex; gap: 6px; }
+.lightbox-body { background: var(--surface-2); overflow: auto; max-height: calc(92vh - 58px); }
+.lightbox-body img { display: block; max-width: 100%; margin: 0 auto; }
+.shot { cursor: zoom-in; }

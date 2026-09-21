@@ -50,6 +50,17 @@ def _render(request: Request, template: str, **context: Any) -> HTMLResponse:
     return templates.TemplateResponse(request, template, context)
 
 
+def not_found_page(request: Request, detail: str) -> HTMLResponse:
+    try:
+        response = _render(request, "not_found.html", detail=detail)
+    except DashDashGoError:  # registry unreadable - still answer with a page
+        response = templates.TemplateResponse(
+            request, "not_found.html", {"detail": detail, "nav_reports": []}
+        )
+    response.status_code = 404
+    return response
+
+
 def _unavailable(request: Request, exc: DashDashGoError) -> HTMLResponse:
     response = _render(request, "unavailable.html", error=exc.message)
     response.status_code = 503

@@ -96,6 +96,42 @@
   });
   document.addEventListener("focusout", () => tip.classList.remove("show"));
 
+  // ---- screenshot viewer --------------------------------------------------------
+  const viewer = document.querySelector("[data-lightbox-dialog]");
+  let shots = [];
+  let current = 0;
+  const showShot = (index) => {
+    if (!shots.length) return;
+    current = (index + shots.length) % shots.length;
+    const link = shots[current];
+    viewer.querySelector("[data-lightbox-img]").src = link.href;
+    viewer.querySelector("[data-lightbox-img]").alt = link.dataset.caption;
+    viewer.querySelector("[data-lightbox-caption]").textContent =
+      `${link.dataset.caption}${shots.length > 1 ? `  (${current + 1}/${shots.length})` : ""}`;
+    viewer.querySelector("[data-lightbox-open]").href = link.href;
+    viewer.querySelectorAll("[data-lightbox-step]").forEach((b) => { b.hidden = shots.length < 2; });
+  };
+  if (viewer) {
+    document.addEventListener("click", (event) => {
+      const link = event.target.closest("[data-lightbox]");
+      if (!link) return;
+      event.preventDefault();
+      shots = [...document.querySelectorAll("[data-lightbox]")];
+      showShot(shots.indexOf(link));
+      viewer.showModal();
+    });
+    viewer.addEventListener("click", (event) => {
+      // Close on the backdrop (the dialog element itself) or the close button.
+      if (event.target === viewer || event.target.closest("[data-lightbox-close]")) viewer.close();
+      const step = event.target.closest("[data-lightbox-step]");
+      if (step) showShot(current + Number(step.dataset.lightboxStep));
+    });
+    viewer.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight") showShot(current + 1);
+      if (event.key === "ArrowLeft") showShot(current - 1);
+    });
+  }
+
   // ---- theme toggle (per-viewer preference) -----------------------------------
   const THEME_KEY = "ddg-theme";
   const setTheme = (theme) => {

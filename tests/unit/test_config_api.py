@@ -81,3 +81,12 @@ def test_editor_pages_render(api: TestClient) -> None:
     assert page.status_code == 200 and "Create pipeline" in page.text
     # the transform reference is rendered from the registry
     assert "pivot" in api.get("/reports/weekly_sales/edit").text
+
+
+def test_unknown_ui_pages_render_html_but_api_stays_json(api: TestClient) -> None:
+    page = api.get("/runs/does-not-exist")
+    assert page.status_code == 404 and "text/html" in page.headers["content-type"]
+    assert "Not found" in page.text and "does-not-exist" in page.text
+    assert api.get("/no/such/page").status_code == 404
+    api_error = api.get("/api/runs/does-not-exist")
+    assert api_error.status_code == 404 and api_error.json()["detail"]

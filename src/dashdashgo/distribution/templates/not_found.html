@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% from "macros.html" import icon %}
+{% block title %}Not found{% endblock %}
+{% block content %}
+<div class="page-head"><div><h1>Not found</h1>
+<p>{{ detail if detail and detail != "Not Found" else "There is no page at this address." }}</p></div></div>
+<div class="notice">{{ icon("info") }}<div>Go back to the <a href="/">overview</a>, browse <a href="/runs">all runs</a>,
+or pick a pipeline from the sidebar.</div></div>
+{% endblock %}

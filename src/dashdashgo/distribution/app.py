@@ -7,8 +7,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from dashdashgo import __version__
 from dashdashgo.container import Container, build_container
@@ -79,4 +81,12 @@ def create_app(
     app.include_router(config_api.router)
     app.include_router(ui.router)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @app.exception_handler(StarletteHTTPException)
+    async def not_found(request: Request, exc: StarletteHTTPException) -> Response:
+        """API clients get JSON; people browsing the UI get a page, not raw JSON."""
+        if exc.status_code == 404 and not request.url.path.startswith(("/api/", "/static/")):
+            return ui.not_found_page(request, str(exc.detail))
+        return await http_exception_handler(request, exc)
+
     return app
