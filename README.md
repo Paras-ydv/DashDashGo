@@ -171,7 +171,7 @@ sequenceDiagram
     SEED->>MB: collections, questions, dashboards, filters<br/>(created only if missing - safe to re-run)
     SEED-->>APP: exits 0 (service_completed_successfully)
     CH-->>APP: /ping healthy (service_healthy)
-    APP->>APP: add bundled report configs to /data/reports<br/>(add-only; edited/archived ones untouched)
+    APP->>APP: add bundled report configs to /data/reports<br/>(add-only, edited/archived ones untouched)
     APP->>CH: create/migrate dashdashgo.pipeline_runs + pipeline_stage_events
     APP->>CH: mark runs orphaned by a previous shutdown as FAILED
     APP->>APP: start scheduler (7 cron schedules) and the UI/API on :8000
