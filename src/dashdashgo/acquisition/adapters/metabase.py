@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Locator, Page, expect
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -191,7 +192,7 @@ class MetabaseAdapter(DashboardAdapter):
                     self._wait_for_results(page)
                     self._verify_filters(page, items)
                     method = "widget"
-                except (_WidgetUnavailable, PlaywrightTimeoutError, NavigationError) as exc:
+                except (_WidgetUnavailable, PlaywrightError, NavigationError) as exc:
                     log.warning("Filter widgets could not be used (%s); applying via URL", exc)
                     self._apply_via_url(page, items)
                     method = "url (widget fallback)"
@@ -246,7 +247,10 @@ class MetabaseAdapter(DashboardAdapter):
             clear = widget.get_by_role("button", name="Clear")
             if clear.count():
                 clear.click()
-                expect(clear).to_have_count(0)
+                try:
+                    expect(clear).to_have_count(0)
+                except AssertionError:
+                    raise _WidgetUnavailable(f"could not clear filter '{item.label}'") from None
             widget.locator(self.sel.parameter_widget_target).click()
             dialog = page.get_by_role("dialog", name=item.label)
             dialog.wait_for(state="visible")
@@ -279,6 +283,10 @@ class MetabaseAdapter(DashboardAdapter):
         return False
 
     def _choose_values(self, dialog: Locator, item: FilterItem) -> bool:
+        # The value list is fetched asynchronously; wait for it (or its search box).
+        dialog.get_by_role("checkbox").or_(
+            dialog.get_by_role("textbox", name=self.sel.list_search)
+        ).first.wait_for(state="visible")
         for value in item.values:
             checkbox = dialog.get_by_role("checkbox", name=value, exact=True)
             if checkbox.count() == 0:

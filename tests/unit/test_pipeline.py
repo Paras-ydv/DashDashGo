@@ -312,3 +312,24 @@ def test_run_records_where_it_executed(tmp_path: Path, report: ReportConfig) -> 
     orchestrator, _, _, storage = build(tmp_path)
     run = orchestrator.run(report, new_run(report.name)).run
     assert run.executed_on.endswith(f":{storage.location}")
+
+
+def test_processed_copy_failure_does_not_fail_the_run(
+    tmp_path: Path, report: ReportConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    orchestrator, _, _, _ = build(tmp_path)
+
+    def broken_parquet(*args: Any, **kwargs: Any) -> None:
+        raise ValueError("cannot convert column")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", broken_parquet)
+    run = orchestrator.run(report, new_run(report.name)).run
+    assert run.status is RunStatus.SUCCESS
+
+
+def test_interrupt_marks_run_failed_and_propagates(tmp_path: Path, report: ReportConfig) -> None:
+    orchestrator, runs, _, _ = build(tmp_path, acquisition_error=KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        orchestrator.run(report, new_run(report.name))
+    [final] = [r for r in runs.run_history if r.status.is_terminal]
+    assert final.status is RunStatus.FAILED and final.error_type == "InterruptedError"

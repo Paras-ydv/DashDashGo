@@ -346,3 +346,43 @@ def test_run_page_explains_logs_stored_elsewhere(client: Any) -> None:
     page = test_client.get(f"/runs/{run.run_id}").text
     assert "No log file in this server" in page
     assert "laptop:/tmp/other-storage" in page
+
+
+def test_submit_does_not_block_the_report_when_queueing_fails(
+    reports_dir: Path, tmp_path: Path
+) -> None:
+    service, runs, _ = make_service(reports_dir, tmp_path)
+    from dashdashgo.errors import WarehouseConnectionError
+
+    original = runs.save_run
+
+    def down(run: RunRecord) -> None:
+        raise WarehouseConnectionError("ClickHouse unavailable")
+
+    runs.save_run = down  # type: ignore[method-assign]
+    with pytest.raises(WarehouseConnectionError):
+        service.submit("sample_report")
+    runs.save_run = original  # type: ignore[method-assign]
+    assert service.submit("sample_report").status is RunStatus.QUEUED  # not stuck as "running"
+    service.shutdown()
+
+
+def test_stale_cli_runs_are_marked_interrupted() -> None:
+    from datetime import timedelta
+
+    runs = InMemoryRunRepository()
+    old = utcnow() - timedelta(hours=7)
+    stale = RunRecord(
+        run_id="a",
+        report="r",
+        trigger=Trigger.CLI,
+        status=RunStatus.RUNNING,
+        started_at=old,
+        updated_at=old,
+    )
+    fresh = RunRecord(
+        run_id="b", report="r", trigger=Trigger.CLI, status=RunStatus.RUNNING, started_at=utcnow()
+    )
+    runs.runs = {"a": stale, "b": fresh}
+    assert runs.mark_interrupted("gone") == 1
+    assert runs.runs["a"].status is RunStatus.FAILED and runs.runs["b"].status is RunStatus.RUNNING

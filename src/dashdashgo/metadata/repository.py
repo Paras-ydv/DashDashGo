@@ -64,7 +64,8 @@ class RunRepository(ABC):
 
     @abstractmethod
     def mark_interrupted(self, message: str) -> int:
-        """Fail QUEUED/RUNNING runs that were executing inside the (restarted) server."""
+        """Fail QUEUED/RUNNING runs that were executing inside the (restarted) server,
+        and runs from any process that have not reported progress for STALE_AFTER."""
 
 
 _RUNS_DDL = """
@@ -116,6 +117,14 @@ CREATE TABLE IF NOT EXISTS `{db}`.pipeline_stage_events
 ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (run_id, stage, attempt)
 """
+
+# A CLI run whose process was killed (SIGKILL, closed terminal) cannot record its
+# own end. Stages update the run every few seconds, so hours of silence means dead.
+STALE_AFTER = timedelta(hours=6)
+
+# A CLI run whose process was killed (SIGKILL, closed terminal) cannot record its
+# own end. Stages update the run every few seconds, so hours of silence means dead.
+STALE_AFTER = timedelta(hours=6)
 
 _ADDED_RUN_COLUMNS: list[tuple[str, str]] = [("executed_on", "String")]
 
@@ -269,8 +278,8 @@ class ClickHouseRunRepository(RunRepository):
         server_triggers = [t.value for t in Trigger if t.executes_in_server]
         rows = self._ch.query_rows(
             f"SELECT * FROM {self._runs} FINAL WHERE status IN ('QUEUED', 'RUNNING') "
-            "AND trigger IN {triggers:Array(String)}",
-            {"triggers": server_triggers},
+            "AND (trigger IN {triggers:Array(String)} OR updated_at < {stale:DateTime64(3)})",
+            {"triggers": server_triggers, "stale": utcnow() - STALE_AFTER},
         )
         now = utcnow()
         for row in rows:

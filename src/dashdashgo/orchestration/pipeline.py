@@ -18,6 +18,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from pyarrow.lib import ArrowException
+
 from dashdashgo.acquisition.service import AcquisitionService
 from dashdashgo.config.models import ReportConfig
 from dashdashgo.errors import DashDashGoError, StorageError
@@ -69,19 +71,30 @@ class PipelineOrchestrator:
     ) -> RunResult:
         redactor.register(report.source.credentials.password.get_secret_value())
         tracker = RunTracker(self._runs, run)
-        with (
-            tempfile.TemporaryDirectory(prefix=f"ddg-{run.run_id}-") as tmp,
-            log_context(run_id=run.run_id, report=report.name),
-        ):
-            ctx = RunContext(run=run, workdir=Path(tmp), force=force)
+        try:
             with (
-                self._storage.writer(ctx.artifacts.key("logs", "run.log")) as log_path,
-                run_log_file(log_path, run.run_id),
+                tempfile.TemporaryDirectory(prefix=f"ddg-{run.run_id}-") as tmp,
+                log_context(run_id=run.run_id, report=report.name),
             ):
-                if overrides:
-                    log.info("Config overrides for this run: %s", ", ".join(overrides))
-                self._execute(report, ctx, tracker)
-            self._write_summary(ctx, tracker.run)
+                ctx = RunContext(run=run, workdir=Path(tmp), force=force)
+                with (
+                    self._storage.writer(ctx.artifacts.key("logs", "run.log")) as log_path,
+                    run_log_file(log_path, run.run_id),
+                ):
+                    if overrides:
+                        log.info("Config overrides for this run: %s", ", ".join(overrides))
+                    self._execute(report, ctx, tracker)
+                self._write_summary(ctx, tracker.run)
+        except BaseException as exc:
+            # Setup failures (log file, temp dir) and interrupts (Ctrl-C) happen outside
+            # the stage machinery: still end the run instead of leaving it RUNNING/QUEUED.
+            if not tracker.run.status.is_terminal:
+                tracker.fail(
+                    exc if isinstance(exc, Exception) else InterruptedError("run was interrupted")
+                )
+            if not isinstance(exc, Exception):
+                raise
+            log.exception("Run %s could not be executed", run.run_id)
         return RunResult(tracker.run)
 
     def _execute(self, report: ReportConfig, ctx: RunContext, tracker: RunTracker) -> None:
@@ -190,10 +203,13 @@ class PipelineOrchestrator:
         details["rejected_file"] = stored.key
 
     def _store_processed(self, ctx: RunContext, dataset: PreparedDataset) -> None:
-        # Typed Parquet (date32, decimal128, ...) inferred from the coerced Python values.
+        """Typed Parquet copy of the loaded rows - useful, but not worth failing a run for."""
         local = ctx.workdir / "processed.parquet"
-        dataset.frame.to_parquet(local, index=False)
-        self._storage.put_file(local, ctx.artifacts.key("processed", "data.parquet"))
+        try:
+            dataset.frame.to_parquet(local, index=False)
+            self._storage.put_file(local, ctx.artifacts.key("processed", "data.parquet"))
+        except (StorageError, OSError, ValueError, TypeError, ArrowException) as exc:
+            log.warning("Could not store the processed Parquet copy: %s", exc)
 
     def _write_summary(self, ctx: RunContext, run: RunRecord) -> None:
         """A self-contained record of the run next to its log, readable without ClickHouse."""

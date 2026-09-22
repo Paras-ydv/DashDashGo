@@ -198,3 +198,11 @@ def test_widget_mode_requires_a_dashboard(
         make_config(config_dict)
     config_dict["source"]["filter_mode"] = "auto"
     make_config(config_dict)  # questions fall back to URL parameters
+
+
+def test_min_max_rules_only_on_numeric_columns(
+    config_dict: dict[str, Any], make_config: MakeConfig
+) -> None:
+    config_dict["ingestion"]["quality"]["rules"] = [{"column": "region", "min": 1}]
+    with pytest.raises(ConfigurationError, match="only apply to numeric columns"):
+        make_config(config_dict)

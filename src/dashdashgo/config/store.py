@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -131,6 +132,7 @@ class ConfigStore:
     def __init__(self, registry: ReportRegistry) -> None:
         self._registry = registry
         self._dir = registry.reports_dir
+        self._write_lock = threading.Lock()  # version check + write must be atomic
 
     # --- reading ------------------------------------------------------------------
 
@@ -171,6 +173,10 @@ class ConfigStore:
 
     def save(self, name: str, text: str, base_version: str) -> ConfigDocument:
         self.check(name, text)
+        with self._write_lock:
+            return self._save(name, text, base_version)
+
+    def _save(self, name: str, text: str, base_version: str) -> ConfigDocument:
         current = self.read(name)
         if current.version != base_version:
             raise ConfigConflictError(
@@ -193,10 +199,11 @@ class ConfigStore:
             raise ConfigurationError(
                 f"{name!r} is reserved", problems=[("name", f"{name!r} is reserved by the UI")]
             )
-        if (self._dir / f"{name}.yaml").exists():
-            raise ConfigConflictError(f"a report named {name!r} already exists")
         self.check(name, text)
-        _write_atomic(self._dir / f"{name}.yaml", text)
+        with self._write_lock:
+            if (self._dir / f"{name}.yaml").exists():
+                raise ConfigConflictError(f"a report named {name!r} already exists")
+            _write_atomic(self._dir / f"{name}.yaml", text)
         return self.read(name)
 
     def archive(self, name: str) -> str:

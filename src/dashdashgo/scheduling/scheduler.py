@@ -9,6 +9,7 @@ cron expression takes effect without a restart.
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -44,6 +45,7 @@ class ReportScheduler:
         self._retention_days = retention_days
         self._scheduler = BackgroundScheduler(timezone="UTC")
         self._schedules: dict[str, ScheduleConfig] = {}
+        self._sync_lock = threading.Lock()  # sync runs from the job thread and API saves
 
     @property
     def running(self) -> bool:
@@ -67,6 +69,10 @@ class ReportScheduler:
 
     def sync(self) -> None:
         """Add, update or remove report jobs to match the config files."""
+        with self._sync_lock:
+            self._sync()
+
+    def _sync(self) -> None:
         valid, invalid = self._registry.load_all()
         for name, error in invalid.items():
             log.error("Not scheduling '%s': %s", name, error.message)

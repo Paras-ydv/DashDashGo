@@ -115,7 +115,8 @@ def apply_transforms(frame: pd.DataFrame, steps: list[TransformStep]) -> pd.Data
             frame = definition.fn(frame, step.options)
         except TransformationError:
             raise
-        except (KeyError, ValueError, TypeError) as exc:
+        except (KeyError, ValueError, TypeError, NameError, SyntaxError, ArithmeticError) as exc:
+            # NameError/SyntaxError come from `compute` expressions (unknown column, typo).
             raise TransformationError(f"transform #{position} '{step.name}' failed: {exc}") from exc
     return frame
 

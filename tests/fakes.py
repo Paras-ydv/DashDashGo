@@ -104,8 +104,13 @@ class InMemoryRunRepository(RunRepository):
 
     def mark_interrupted(self, message: str) -> int:
         count = 0
+        from dashdashgo.metadata.repository import STALE_AFTER
+
+        stale = utcnow() - STALE_AFTER
         for run in list(self.runs.values()):
-            if not run.status.is_terminal and run.trigger.executes_in_server:
+            if not run.status.is_terminal and (
+                run.trigger.executes_in_server or run.updated_at < stale
+            ):
                 self.save_run(
                     run.model_copy(update={"status": RunStatus.FAILED, "error_message": message})
                 )

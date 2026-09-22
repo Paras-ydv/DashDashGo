@@ -227,7 +227,7 @@ def ensure_warehouse(api: MetabaseAPI, host: str, reader_password: str) -> int:
 def wait_for_field(api: MetabaseAPI, db_id: int, schema: str, table: str, field: str) -> int:
     """Field filters need Metabase's synced field id; sync is asynchronous."""
     api.request("POST", f"/api/database/{db_id}/sync_schema")
-    for _ in range(60):
+    for _ in range(150):  # up to 5 minutes on slow machines
         metadata = api.request("GET", f"/api/database/{db_id}/metadata")
         for tbl in metadata.get("tables", []):
             if tbl["schema"] == schema and tbl["name"] == table:
@@ -547,13 +547,21 @@ def seed(api: MetabaseAPI) -> None:
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     api = MetabaseAPI(os.environ.get("METABASE_URL", "http://metabase:3000"))
-    try:
-        api.wait_until_healthy()
-        seed(api)
-    except (KeyError, RuntimeError, TimeoutError) as exc:
-        log.error("Seeding failed: %s", exc)
-        return 1
-    return 0
+    for attempt in range(1, 4):
+        try:
+            api.wait_until_healthy()
+            seed(api)
+            return 0
+        except KeyError as exc:
+            log.error("Missing environment variable %s", exc)
+            return 1
+        except (RuntimeError, TimeoutError, OSError) as exc:
+            # Metabase can still be finishing migrations right after it reports
+            # healthy; seeding is idempotent, so simply try again.
+            log.warning("Seeding attempt %d failed: %s", attempt, exc)
+            time.sleep(10)
+    log.error("Seeding failed after 3 attempts")
+    return 1
 
 
 if __name__ == "__main__":

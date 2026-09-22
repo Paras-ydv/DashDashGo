@@ -10,6 +10,7 @@ from __future__ import annotations
 import fcntl
 import logging
 import os
+import threading
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
@@ -17,7 +18,7 @@ from pathlib import Path
 
 from dashdashgo.config.loader import ReportRegistry
 from dashdashgo.config.models import ReportConfig
-from dashdashgo.errors import ConcurrentRunError, ConfigurationError
+from dashdashgo.errors import ConcurrentRunError, ConfigurationError, DashDashGoError
 from dashdashgo.metadata.models import RunRecord, RunStatus, Trigger, new_run_id, utcnow
 from dashdashgo.metadata.repository import RunRepository
 from dashdashgo.observability.logging import log_context
@@ -70,6 +71,7 @@ class RunService:
         self._lock = lock
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="run")
         self._active: set[str] = set()
+        self._active_lock = threading.Lock()
 
     def _prepare(
         self,
@@ -112,11 +114,15 @@ class RunService:
                         "error_stage": "queued",
                     }
                 )
-                self._runs.save_run(failed)
+                try:
+                    self._runs.save_run(failed)
+                except DashDashGoError as save_error:
+                    log.error("Could not record the skipped run: %s", save_error.message)
                 log.warning("Not started: %s", exc.message)
                 return RunResult(failed)
             finally:
-                self._active.discard(report.name)
+                with self._active_lock:
+                    self._active.discard(report.name)
 
     def run_now(
         self,
@@ -149,11 +155,17 @@ class RunService:
     ) -> RunRecord:
         """Queue a run in the background and return its (QUEUED) record immediately."""
         report, run = self._prepare(name, trigger, parent_run_id)
-        if name in self._active:
-            raise ConcurrentRunError(f"a run of '{name}' is already queued or running")
-        self._active.add(name)
-        self._runs.save_run(run)
-        future: Future[RunResult] = self._executor.submit(self._execute, report, run, force)
+        with self._active_lock:  # check-and-claim atomically across request threads
+            if name in self._active:
+                raise ConcurrentRunError(f"a run of '{name}' is already queued or running")
+            self._active.add(name)
+        try:
+            self._runs.save_run(run)
+            future: Future[RunResult] = self._executor.submit(self._execute, report, run, force)
+        except BaseException:
+            with self._active_lock:  # never leave the report blocked if queueing failed
+                self._active.discard(name)
+            raise
         if on_done:
             future.add_done_callback(lambda f: on_done(f.result()))
         log.info("Queued run %s of '%s' (trigger=%s)", run.run_id, name, trigger.value)

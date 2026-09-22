@@ -24,7 +24,7 @@ from pydantic import (
     model_validator,
 )
 
-from dashdashgo.columns import ColumnType, parse_column_type
+from dashdashgo.columns import ColumnType, Kind, parse_column_type
 from dashdashgo.ingestion.transforms import TransformStep, parse_transform_step
 from dashdashgo.scheduling.cron import cron_trigger
 
@@ -415,6 +415,14 @@ class ReportConfig(StrictModel):
         quality = self.ingestion.quality
         if unknown := [r.column for r in quality.rules if r.column not in columns]:
             raise ValueError(f"quality rules reference unknown destination columns: {unknown}")
+        kinds = {c.name: c.column_type.kind for c in self.destination.columns}
+        numeric = {Kind.INTEGER, Kind.FLOAT, Kind.DECIMAL}
+        if bad := [
+            r.column
+            for r in quality.rules
+            if (r.min is not None or r.max is not None) and kinds[r.column] not in numeric
+        ]:
+            raise ValueError(f"min/max rules only apply to numeric columns: {bad}")
         return self
 
     @property

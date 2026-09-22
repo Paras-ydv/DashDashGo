@@ -177,3 +177,8 @@ def test_parse_numbers_handles_formatted_exports() -> None:
     assert out["cpc"].tolist()[0] == pytest.approx(0.1, rel=1e-3)
     with pytest.raises(TransformationError, match="non-number"):
         run(pd.DataFrame({"x": ["n/a"]}), {"parse_numbers": {"columns": ["x"]}})
+
+
+def test_compute_with_unknown_column_is_a_transformation_error() -> None:
+    with pytest.raises(TransformationError, match="'compute'"):
+        run(pd.DataFrame({"a": [1]}), {"compute": {"columns": {"b": "a + missing_column"}}})
