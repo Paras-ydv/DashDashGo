@@ -11,11 +11,17 @@
     setTimeout(() => el.remove(), 5000);
   };
 
-  const post = async (url) => {
-    const response = await fetch(url, { method: "POST", headers: { Accept: "application/json" } });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.detail || `Request failed (${response.status})`);
-    return body;
+  const post = async (url, body) => {
+    const headers = { Accept: "application/json" };
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.detail || `Request failed (${response.status})`);
+    return result;
   };
 
   // ---- actions: "Run now" and "Retry" --------------------------------------
@@ -27,11 +33,35 @@
     try {
       const run = button.dataset.runReport
         ? await post(`/api/reports/${encodeURIComponent(button.dataset.runReport)}/runs${button.dataset.force ? "?force=true" : ""}`)
-        : await post(`/api/runs/${encodeURIComponent(button.dataset.retryRun)}/retry`);
+        : await post(
+            `/api/runs/${encodeURIComponent(button.dataset.retryRun)}/retry`,
+            button.dataset.overrides ? { overrides: JSON.parse(button.dataset.overrides) } : undefined,
+          );
       window.location.href = `/runs/${encodeURIComponent(run.run_id)}`;
     } catch (error) {
       toast(error.message);
       button.disabled = false;
+    }
+  });
+
+  // ---- AI diagnosis: ask, then show the stored result -------------------------
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-ai-diagnose]");
+    if (!button) return;
+    event.preventDefault();
+    button.disabled = true;
+    const label = button.innerHTML;
+    button.textContent = "Diagnosing… (can take a minute or two)";
+    const placeholder = document.querySelector("[data-ai-placeholder]");
+    if (placeholder) placeholder.textContent = "Reading the evidence…";
+    try {
+      await post(`/api/runs/${encodeURIComponent(button.dataset.aiDiagnose)}/diagnose`);
+      window.location.reload();
+    } catch (error) {
+      toast(error.message);
+      button.innerHTML = label;
+      button.disabled = false;
+      if (placeholder) placeholder.textContent = "Diagnosis failed; see the message and try again.";
     }
   });
 

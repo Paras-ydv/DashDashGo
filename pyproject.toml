@@ -8,6 +8,7 @@ dependencies = [
     "apscheduler>=3.11,<4",
     "clickhouse-connect>=0.8",
     "fastapi>=0.115",
+    "httpx>=0.27",
     "jinja2>=3.1",
     "openpyxl>=3.1",
     "pandas>=2.2",

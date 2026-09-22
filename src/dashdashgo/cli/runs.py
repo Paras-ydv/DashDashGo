@@ -221,7 +221,11 @@ def cmd_retry(args: argparse.Namespace) -> int:
         return EXIT_FAILED
     try:
         result = container.run_service.run_now(
-            previous.report, trigger=Trigger.CLI, parent_run_id=previous.run_id, force=args.force
+            previous.report,
+            trigger=Trigger.CLI,
+            parent_run_id=previous.run_id,
+            force=args.force,
+            overrides=list(args.set or []),
         )
     finally:
         container.run_service.shutdown()

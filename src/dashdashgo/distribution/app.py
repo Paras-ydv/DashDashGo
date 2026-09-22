@@ -14,7 +14,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from dashdashgo import __version__
 from dashdashgo.container import Container, build_container, seed_bundled_reports
-from dashdashgo.distribution import api, config_api, ui
+from dashdashgo.distribution import ai_api, api, config_api, ui
+from dashdashgo.distribution.security import install_security
 from dashdashgo.distribution.state import AppState
 from dashdashgo.errors import DashDashGoError
 from dashdashgo.scheduling.scheduler import ReportScheduler
@@ -78,8 +79,10 @@ def create_app(
         description="Dashboard report acquisition, ingestion and distribution.",
         lifespan=lifespan,
     )
+    install_security(app, settings)
     app.include_router(api.router)
     app.include_router(config_api.router)
+    app.include_router(ai_api.router)
     app.include_router(ui.router)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

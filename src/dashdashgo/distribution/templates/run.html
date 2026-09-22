@@ -1,19 +1,6 @@
 {% extends "base.html" %}
 {% from "macros.html" import icon, status_pill %}
-{% block title %}Run {{ run.run_id }}{# Outside #live-root so a live refresh never closes an open viewer. #}
-<dialog class="lightbox" data-lightbox-dialog aria-label="Failure screenshot">
-  <div class="lightbox-bar">
-    <span class="mono" data-lightbox-caption></span>
-    <span class="actions">
-      <button class="btn btn-sm" type="button" data-lightbox-step="-1" aria-label="Previous screenshot">←</button>
-      <button class="btn btn-sm" type="button" data-lightbox-step="1" aria-label="Next screenshot">→</button>
-      <a class="btn btn-sm" data-lightbox-open target="_blank" rel="noopener">Open original</a>
-      <button class="btn btn-sm btn-primary" type="button" data-lightbox-close aria-label="Close">✕ Close</button>
-    </span>
-  </div>
-  <div class="lightbox-body"><img data-lightbox-img alt=""></div>
-</dialog>
-{% endblock %}
+{% block title %}Run {{ run.run_id }}{% endblock %}
 
 {% macro step_icon(state) -%}
 {%- if state == "success" %}{{ icon("check") }}{% elif state == "failed" %}{{ icon("x") }}{% elif state == "running" %}{{ icon("spinner", "spin") }}{% elif state == "skipped" %}{{ icon("skip") }}{% else %}{{ icon("dot") }}{% endif -%}
@@ -50,6 +37,39 @@
       <p>{{ run.error_message }}</p>
     </div>
   </div>
+  {% if ai_enabled %}
+  <section class="card ai-card">
+    <div class="card-head">
+      <div><h2>{{ icon("spark") }}AI diagnosis</h2>
+        <p>Sends this run's error, timeline, log tail, config (secrets masked) and failure screenshot to {{ ai_model }}.</p></div>
+      <div class="actions"><button class="btn {{ '' if diagnosis else 'btn-primary' }}" type="button" data-ai-diagnose="{{ run.run_id }}">{{ icon("spark") }}{{ "Diagnose again" if diagnosis else "Diagnose with AI" }}</button></div>
+    </div>
+    {% if diagnosis %}
+    <div class="card-body ai-result">
+      <p class="ai-summary">{{ diagnosis.summary }}</p>
+      <dl class="kv">
+        <dt>Category</dt><dd><span class="badge">{{ diagnosis.category|replace("_", " ") }}</span>{% if diagnosis.transient %} <span class="muted">· likely transient: a later retry should work</span>{% endif %}</dd>
+        <dt>Likely cause</dt><dd>{{ diagnosis.likely_cause }}</dd>
+        <dt>Suggested fix</dt><dd class="ai-fix">{{ diagnosis.suggested_fix }}</dd>
+        {% if diagnosis.config_overrides %}
+        <dt>Config change</dt><dd>{% for o in diagnosis.config_overrides %}<code>{{ o }}</code>{% if not loop.last %}<br>{% endif %}{% endfor %}
+          <div class="muted" style="margin-top:4px">Validated against the schema and security policy; applies to the retry only.</div></dd>
+        {% elif diagnosis.overrides_note %}
+        <dt>Config change</dt><dd class="muted">{{ diagnosis.overrides_note }}</dd>
+        {% endif %}
+        <dt>Confidence</dt><dd>{{ (diagnosis.confidence * 100)|round|int }}% <span class="muted">· {{ diagnosis.model }} · {{ diagnosis.created_at|utc }}</span></dd>
+      </dl>
+      {% if diagnosis.config_overrides %}
+      <div class="actions" style="margin-top:14px">
+        <button class="btn btn-primary" type="button" data-retry-run="{{ run.run_id }}" data-overrides="{{ diagnosis.config_overrides|tojson|forceescape }}">{{ icon("retry") }}Retry with suggested change</button>
+      </div>
+      {% endif %}
+    </div>
+    {% else %}
+    <div class="empty" data-ai-placeholder>Not diagnosed yet. The assistant only suggests; nothing changes until you retry.</div>
+    {% endif %}
+  </section>
+  {% endif %}
   {% elif run.status.value == "SKIPPED" %}
   <div class="notice">{{ icon("info") }}<div>Nothing was loaded: the downloaded data is identical to what run
     <a class="mono" href="/runs/{{ run.duplicate_of }}">{{ run.duplicate_of }}</a> already ingested (same content fingerprint).

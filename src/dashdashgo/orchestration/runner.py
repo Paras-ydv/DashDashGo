@@ -151,17 +151,23 @@ class RunService:
         trigger: Trigger = Trigger.API,
         force: bool = False,
         parent_run_id: str | None = None,
+        overrides: Sequence[str] = (),
         on_done: Callable[[RunResult], None] | None = None,
     ) -> RunRecord:
-        """Queue a run in the background and return its (QUEUED) record immediately."""
-        report, run = self._prepare(name, trigger, parent_run_id)
+        """Queue a run in the background and return its (QUEUED) record immediately.
+
+        ``overrides`` are validated here, so a bad one is refused before queueing.
+        """
+        report, run = self._prepare(name, trigger, parent_run_id, overrides)
         with self._active_lock:  # check-and-claim atomically across request threads
             if name in self._active:
                 raise ConcurrentRunError(f"a run of '{name}' is already queued or running")
             self._active.add(name)
         try:
             self._runs.save_run(run)
-            future: Future[RunResult] = self._executor.submit(self._execute, report, run, force)
+            future: Future[RunResult] = self._executor.submit(
+                self._execute, report, run, force, overrides
+            )
         except BaseException:
             with self._active_lock:  # never leave the report blocked if queueing failed
                 self._active.discard(name)

@@ -45,6 +45,20 @@
   </section>
 
   <aside class="stack">
+    {% if mode == "new" and ai_enabled %}
+    <section class="card ai-card" data-draft>
+      <div class="card-head"><div><h2>{{ icon("spark") }}Draft with AI</h2>
+        <p>Upload a sample export (.csv, .xlsx, .json). The assistant proposes columns, types, transforms and rules,
+           using the "Start from" pipeline as its reference; the draft is validated and nothing is saved until you create it.</p></div></div>
+      <div class="card-body">
+        <div class="draft-panel">
+          <input type="file" accept=".csv,.xlsx,.json" data-draft-file aria-label="Sample export file">
+          <button class="btn btn-primary" type="button" data-draft-run>{{ icon("spark") }}Draft config</button>
+        </div>
+        <div data-draft-notes></div>
+      </div>
+    </section>
+    {% endif %}
     <section class="card">
       <div class="card-head"><h2>Validation</h2></div>
       <div class="card-body validation" data-result>

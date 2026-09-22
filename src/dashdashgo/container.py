@@ -10,6 +10,8 @@ import logging
 from dataclasses import dataclass
 
 from dashdashgo.acquisition.service import AcquisitionService
+from dashdashgo.ai.assistant import AIAssistant
+from dashdashgo.ai.client import build_client
 from dashdashgo.config.loader import ReportRegistry
 from dashdashgo.config.store import ConfigStore
 from dashdashgo.ingestion.service import IngestionService
@@ -37,10 +39,12 @@ class Container:
     run_service: RunService
     config_store: ConfigStore
     loader: WarehouseLoader
+    assistant: AIAssistant | None = None
 
 
 def build_container(settings: Settings) -> Container:
-    redactor.register(settings.clickhouse_password.get_secret_value())
+    for secret in (settings.clickhouse_password, settings.auth_password, settings.ai_api_key):
+        redactor.register(secret.get_secret_value())
     clickhouse = ClickHouse(settings)
     storage = LocalStorage(settings.storage_root)
     runs = ClickHouseRunRepository(clickhouse, settings.clickhouse_metadata_database)
@@ -60,6 +64,16 @@ def build_container(settings: Settings) -> Container:
         lock=ReportLock(settings.storage_root / ".locks"),
         max_workers=settings.max_concurrent_runs,
     )
+    config_store = ConfigStore(registry)
+    client = build_client(
+        api_key=settings.ai_api_key.get_secret_value(),
+        base_url=settings.ai_base_url,
+        model=settings.ai_model,
+        timeout_s=settings.ai_timeout_s,
+    )
+    assistant = AIAssistant(
+        client=client, storage=storage, runs=runs, registry=registry, config_store=config_store
+    )
     return Container(
         settings=settings,
         clickhouse=clickhouse,
@@ -68,8 +82,9 @@ def build_container(settings: Settings) -> Container:
         runs=runs,
         data_reader=ReportDataReader(clickhouse),
         run_service=run_service,
-        config_store=ConfigStore(registry),
+        config_store=config_store,
         loader=loader,
+        assistant=assistant,
     )
 
 

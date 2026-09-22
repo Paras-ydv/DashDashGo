@@ -10,6 +10,7 @@ GET  /api/runs                           run history (?report=&status=)
 GET  /api/runs/{run_id}                  run + timeline + artifacts
 GET  /api/runs/{run_id}/logs             structured log lines of the run
 POST /api/runs/{run_id}/retry            re-run a finished run's report
+(start and retry accept an optional body {"overrides": ["key.path=value", ...]})
 GET  /api/artifacts/{key}                download a stored artifact
 """
 
@@ -25,6 +26,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field
 
 from dashdashgo import __version__
 from dashdashgo.distribution.state import AppState, get_state
@@ -90,6 +92,7 @@ def health(request: Request) -> JSONResponse:
         "clickhouse": "up" if clickhouse else "down",
         "scheduler": "running" if state.scheduler and state.scheduler.running else "stopped",
         "reports": len(state.container.registry.names()),
+        "ai": "enabled" if state.ai_enabled else "disabled",
     }
     return JSONResponse(body, status_code=200 if clickhouse else 503)
 
@@ -150,11 +153,25 @@ def get_report(request: Request, name: str) -> dict[str, Any]:
     }
 
 
+class RunRequest(BaseModel):
+    overrides: list[str] = Field(
+        default_factory=list,
+        max_length=20,
+        description="Config changes for this run only, e.g. browser.timeout_ms=60000. "
+        "Validated like the config file itself.",
+    )
+
+
 @router.post("/reports/{name}/runs", status_code=202)
-def start_run(request: Request, name: str, force: bool = False) -> dict[str, Any]:
+def start_run(
+    request: Request, name: str, force: bool = False, body: RunRequest | None = None
+) -> dict[str, Any]:
     state = get_state(request)
+    overrides = body.overrides if body else []
     try:
-        run = state.container.run_service.submit(name, trigger=Trigger.API, force=force)
+        run = state.container.run_service.submit(
+            name, trigger=Trigger.API, force=force, overrides=overrides
+        )
     except DashDashGoError as exc:
         raise _error(exc) from exc
     return run.model_dump(mode="json")
@@ -239,14 +256,17 @@ def run_logs(request: Request, run_id: str) -> list[dict[str, str]]:
 
 
 @router.post("/runs/{run_id}/retry", status_code=202)
-def retry_run(request: Request, run_id: str) -> dict[str, Any]:
+def retry_run(request: Request, run_id: str, body: RunRequest | None = None) -> dict[str, Any]:
     state = get_state(request)
     previous = _run_or_404(state, run_id)
     if not previous.status.is_terminal:
         raise HTTPException(409, f"run {run_id} is still {previous.status.value.lower()}")
     try:
         run = state.container.run_service.submit(
-            previous.report, trigger=Trigger.RETRY, parent_run_id=run_id
+            previous.report,
+            trigger=Trigger.RETRY,
+            parent_run_id=run_id,
+            overrides=body.overrides if body else [],
         )
     except DashDashGoError as exc:
         raise _error(exc) from exc

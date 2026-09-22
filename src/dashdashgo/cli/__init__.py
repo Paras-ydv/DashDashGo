@@ -6,6 +6,7 @@ entirely from a terminal, a cron job or CI:
     run, runs, show, logs, retry, data, stats      execute and inspect runs
     list, validate, schema, config ...             manage report configs
     serve, init-db, prune                          operate the service
+    ai diagnose, ai draft                          optional AI assistant
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import sys
 from datetime import timedelta
 
 from dashdashgo import __version__
-from dashdashgo.cli import config_cmds, runs
+from dashdashgo.cli import ai_cmds, config_cmds, runs
 from dashdashgo.errors import DashDashGoError
 from dashdashgo.observability.logging import configure_logging
 from dashdashgo.settings import get_settings
@@ -32,6 +33,8 @@ examples:
   dashdashgo show <run_id>   |   dashdashgo logs <run_id> --follow
   dashdashgo data weekly_sales --since 2026-09-14 --format csv > sales.csv
   dashdashgo config new monthly_sales --from weekly_sales --edit
+  dashdashgo ai diagnose <run_id>                        # needs AI_API_KEY
+  dashdashgo ai draft monthly_sales --sample export.csv -o monthly_sales.yaml
 """
 
 
@@ -129,6 +132,12 @@ def build_parser() -> argparse.ArgumentParser:
     retry = sub.add_parser("retry", help="re-run the report of a finished run")
     retry.add_argument("run_id")
     retry.add_argument("--force", action="store_true")
+    retry.add_argument(
+        "--set",
+        action="append",
+        metavar="KEY=VALUE",
+        help="config change for this retry only (repeatable), e.g. from `ai diagnose`",
+    )
     retry.set_defaults(func=runs.cmd_retry)
 
     data = sub.add_parser("data", help="query a report's loaded data")
@@ -187,6 +196,22 @@ def build_parser() -> argparse.ArgumentParser:
     c_archive.add_argument("report")
     c_archive.add_argument("--yes", "-y", action="store_true")
     c_archive.set_defaults(func=config_cmds.cmd_config_archive)
+
+    # --- AI assistant ----------------------------------------------------------------
+    ai = sub.add_parser("ai", help="AI assistant: diagnose failures, draft configs")
+    ai_sub = ai.add_subparsers(dest="ai_command", required=True, metavar="<action>")
+    a_diag = ai_sub.add_parser("diagnose", help="explain a failed run and suggest a fix")
+    a_diag.add_argument("run_id")
+    a_diag.add_argument("--json", action="store_true")
+    a_diag.set_defaults(func=ai_cmds.cmd_diagnose)
+    a_draft = ai_sub.add_parser("draft", help="draft a report config from a sample export file")
+    a_draft.add_argument("name", help="new report name")
+    a_draft.add_argument("--sample", required=True, metavar="FILE", help=".csv, .xlsx or .json")
+    a_draft.add_argument(
+        "--from", dest="source", metavar="REPORT", help="reference report (default: weekly_sales)"
+    )
+    a_draft.add_argument("--output", "-o", metavar="FILE", help="write the YAML here")
+    a_draft.set_defaults(func=ai_cmds.cmd_draft)
 
     # --- service ------------------------------------------------------------------
     serve = sub.add_parser("serve", help="start the API, UI and scheduler")

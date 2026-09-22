@@ -130,3 +130,17 @@ def test_table_alignment() -> None:
     assert rendered[0] == "NAME  ROWS"
     assert rendered[2] == "a        5"  # text left-aligned, numbers right-aligned
     assert rendered[3] == "bbb   1234"
+
+
+def test_ai_commands_and_retry_with_changes_parse() -> None:
+    diagnose = parse("ai", "diagnose", "20260921-184645-ccbe5f", "--json")
+    assert diagnose.run_id == "20260921-184645-ccbe5f" and diagnose.json
+    draft = parse("ai", "draft", "mrr_v2", "--sample", "x.csv", "--from", "mrr_monthly", "-o", "o")
+    assert (draft.name, draft.sample, draft.source, draft.output) == (
+        "mrr_v2",
+        "x.csv",
+        "mrr_monthly",
+        "o",
+    )
+    retry = parse("retry", "r1", "--set", "browser.timeout_ms=60000")
+    assert retry.set == ["browser.timeout_ms=60000"]

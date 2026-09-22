@@ -170,9 +170,11 @@
   // ---- new pipeline: name + template -----------------------------------------
   const syncNameLine = () => {
     const name = reportName() || "new_report";
+    const untouched = !dirty(); // renaming alone is not an edit worth confirming
     textarea.value = textarea.value.replace(/^name:.*$/m, `name: ${name}`).replace(
       /^(\s*table:\s*)new_report\s*$/m, `$1${name}`,
     );
+    if (untouched) saved = textarea.value;
     renderGutter();
     scheduleValidation();
   };
@@ -187,6 +189,54 @@
     saved = body.yaml;
     syncNameLine();
     updateState();
+  });
+
+  // ---- AI draft from a sample file (new pipelines, when the assistant is on) ----
+  const draftCard = root.querySelector("[data-draft]");
+  const base64Of = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",", 2)[1] || "");
+    reader.onerror = () => reject(new Error("could not read the file"));
+    reader.readAsDataURL(file);
+  });
+  draftCard?.querySelector("[data-draft-run]").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const file = draftCard.querySelector("[data-draft-file]").files[0];
+    const notes = draftCard.querySelector("[data-draft-notes]");
+    const name = reportName();
+    if (!name || !nameInput.checkValidity()) { toast("Enter a valid pipeline name first."); nameInput.focus(); return; }
+    if (!file) { toast("Choose a sample export file first."); return; }
+    if (dirty() && !window.confirm("Replace the editor contents with the AI draft?")) return;
+    const label = button.innerHTML;
+    button.disabled = true;
+    button.textContent = "Drafting… (can take a minute or two)";
+    notes.replaceChildren();
+    try {
+      const response = await fetch(`/api/reports/${encodeURIComponent(name)}/config/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          filename: file.name,
+          content_base64: await base64Of(file),
+          from_report: templateSelect?.value || null,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || `Draft failed (${response.status})`);
+      textarea.value = body.yaml;
+      textarea.dispatchEvent(new Event("input"));
+      const items = [...body.notes, ...body.problems.map((p) => `Still invalid: ${p.location}: ${p.message}`)];
+      if (items.length) {
+        const list = el("ul", "draft-notes");
+        items.forEach((text) => list.append(el("li", "", text)));
+        notes.append(el("p", "muted", `Drafted by ${body.model}. Check before creating:`), list);
+      }
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      button.innerHTML = label;
+      button.disabled = false;
+    }
   });
 
   // ---- save / create / archive / history ---------------------------------------

@@ -15,7 +15,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # Empty values (e.g. `AI_MODEL:` passed through by Compose) mean "use the default".
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
     clickhouse_host: str = "localhost"
     clickhouse_port: int = 8123
@@ -40,6 +41,25 @@ class Settings(BaseSettings):
 
     api_host: str = "0.0.0.0"
     api_port: int = 8000
+    # HTTP Basic auth for the UI and API; disabled while either is empty.
+    auth_username: str = ""
+    auth_password: SecretStr = SecretStr("")
+
+    # Optional AI assistant (failure diagnosis, config drafting) through any
+    # OpenAI-compatible chat API. Disabled while ai_api_key is empty.
+    ai_api_key: SecretStr = SecretStr("")
+    ai_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    # Comma list, tried in order: later models are fallbacks when one is overloaded.
+    ai_model: str = "gemini-3.6-flash,gemini-flash-latest"
+    ai_timeout_s: float = Field(default=60, gt=0, le=600)
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.auth_username and self.auth_password.get_secret_value())
+
+    @property
+    def ai_enabled(self) -> bool:
+        return bool(self.ai_api_key.get_secret_value())
 
 
 @lru_cache(maxsize=1)

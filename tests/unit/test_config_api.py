@@ -15,31 +15,46 @@ from dashdashgo.config.store import ConfigStore
 from tests.conftest import REPORTS_DIR, TEST_ENV
 
 
-@pytest.fixture
-def api(tmp_path: Path) -> Iterator[TestClient]:
+def make_client(tmp_path: Path, *, ai_client: Any = None, **settings: Any) -> TestClient:
+    """An app over fakes; settings never come from the developer's `.env`.
+
+    ``ai_client`` switches the AI assistant on with a fake provider.
+    """
+    from dashdashgo.ai.assistant import AIAssistant
     from dashdashgo.container import Container
     from dashdashgo.distribution.app import create_app
     from dashdashgo.settings import Settings
     from dashdashgo.storage import LocalStorage
-    from tests.fakes import InMemoryRunRepository
     from tests.unit.test_service_layer import FakeClickHouse, FakeLoader, make_service
 
     directory = tmp_path / "reports"
     shutil.copytree(REPORTS_DIR, directory)
     registry = ReportRegistry(directory, TEST_ENV)
-    service, _, _ = make_service(directory, tmp_path)
+    service, runs, _ = make_service(directory, tmp_path)
+    storage = LocalStorage(tmp_path / "storage")
+    store = ConfigStore(registry)
+    assistant = AIAssistant(
+        client=ai_client, storage=storage, runs=runs, registry=registry, config_store=store
+    )
+    app_settings = Settings(_env_file=None, **settings)  # type: ignore[call-arg]
     container = Container(
-        settings=Settings(),
+        settings=app_settings,
         clickhouse=FakeClickHouse(),  # type: ignore[arg-type]
         registry=registry,
-        storage=LocalStorage(tmp_path / "storage"),
-        runs=InMemoryRunRepository(),
+        storage=storage,
+        runs=runs,
         data_reader=None,  # type: ignore[arg-type]
         run_service=service,
-        config_store=ConfigStore(registry),
+        config_store=store,
         loader=FakeLoader(),  # type: ignore[arg-type]
+        assistant=assistant,
     )
-    with TestClient(create_app(Settings(), container=container, scheduler=False)) as client:
+    return TestClient(create_app(app_settings, container=container, scheduler=False))
+
+
+@pytest.fixture
+def api(tmp_path: Path) -> Iterator[TestClient]:
+    with make_client(tmp_path) as client:
         yield client
 
 

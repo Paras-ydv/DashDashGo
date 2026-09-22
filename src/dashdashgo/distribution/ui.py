@@ -115,6 +115,7 @@ def new_report_page(request: Request, source: str | None = None) -> HTMLResponse
         request,
         "config_edit.html",
         mode="new",
+        ai_enabled=state.ai_enabled,
         name="",
         yaml_text=text,
         config_version="",
@@ -224,9 +225,14 @@ def run_page(request: Request, run_id: str) -> HTMLResponse:
         return _unavailable(request, exc)
     artifacts = list_artifacts(state.container.storage, run)
     screenshots = artifacts.get("screenshots", [])
+    assistant = state.container.assistant
+    ai_enabled = state.ai_enabled and run.status is RunStatus.FAILED
     return _render(
         request,
         "run.html",
+        ai_enabled=ai_enabled,
+        ai_model=state.container.settings.ai_model.split(",")[0].strip(),
+        diagnosis=assistant.stored_diagnosis(run) if ai_enabled and assistant else None,
         run=run,
         timeline=build_timeline(run, stages),
         artifacts=artifacts,

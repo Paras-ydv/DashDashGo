@@ -160,3 +160,16 @@ class StorageError(DashDashGoError):
 
 class ConcurrentRunError(DashDashGoError):
     """Another run of the same report is already in progress."""
+
+
+# --- AI assistant ----------------------------------------------------------------
+
+
+class AIError(DashDashGoError):
+    """The AI provider failed or returned something unusable."""
+
+    stage = "ai"
+
+
+class AINotConfiguredError(AIError):
+    """No AI_API_KEY is set."""
