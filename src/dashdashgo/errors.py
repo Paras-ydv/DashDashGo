@@ -13,6 +13,8 @@ were captured while handling them, so the UI can link failures to evidence.
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class DashDashGoError(Exception):
     retryable: bool = False
@@ -112,7 +114,16 @@ class TransformationError(IngestionError):
 
 
 class DataQualityError(IngestionError):
+    """The dataset failed a quality policy. ``row_errors`` maps positions in the
+    transformed frame to the problems that caused the failure (the rows are
+    stored for inspection even though nothing is loaded)."""
+
     stage = "quality"
+
+    def __init__(self, message: str, *, row_errors: dict[int, list[str]] | None = None) -> None:
+        super().__init__(message)
+        self.row_errors = row_errors or {}
+        self.rejected: Any = None  # pandas DataFrame of those rows, attached by ingestion
 
 
 # --- warehouse ----------------------------------------------------------------

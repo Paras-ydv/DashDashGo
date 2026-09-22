@@ -18,11 +18,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import pandas as pd
 from pyarrow.lib import ArrowException
 
 from dashdashgo.acquisition.service import AcquisitionService
-from dashdashgo.config.models import ReportConfig
-from dashdashgo.errors import DashDashGoError, StorageError
+from dashdashgo.config.models import DestinationConfig, ReportConfig
+from dashdashgo.errors import DashDashGoError, DataQualityError, StorageError
 from dashdashgo.ingestion.service import IngestionService, PreparedDataset
 from dashdashgo.metadata.models import RunRecord, RunStatus, utcnow
 from dashdashgo.metadata.repository import RunRepository
@@ -138,19 +139,38 @@ class PipelineOrchestrator:
                 )
 
             with tracker.stage("quality") as stage:
-                dataset = self._ingestion.validate(transformed, report)
+                policy_name = report.ingestion.quality.on_invalid_rows
+                try:
+                    dataset = self._ingestion.validate(transformed, report)
+                except DataQualityError as exc:
+                    # Failed runs keep the offending rows so they can be inspected.
+                    if exc.rejected is not None and not exc.rejected.empty:
+                        key = self._store_rows(ctx, exc.rejected)
+                        stage.details["rejected_file"] = key
+                        exc.artifacts.append(key)
+                    raise
                 quality = dataset.quality
                 stage.message = f"{quality.valid_rows:,} valid, {quality.rejected_rows:,} rejected"
                 stage.details = dataset.quality.as_dict()
-                self._store_rejected(ctx, dataset, stage.details)
+                if policy_name == "quarantine" and not dataset.rejected.empty:
+                    stage.details["rejected_file"] = self._store_rows(ctx, dataset.rejected)
+                elif quality.rejected_rows:
+                    log.info(
+                        "Dropped %d invalid rows (on_invalid_rows=drop)", quality.rejected_rows
+                    )
             tracker.update(
                 records_rejected=dataset.quality.rejected_rows, data_hash=dataset.fingerprint
             )
             self._store_processed(ctx, dataset)
 
             with tracker.stage("dedup") as stage:
-                previous = self._runs.find_ingested(report.name, dataset.fingerprint)
-                duplicate = previous is not None and previous.run_id != ctx.run_id
+                # Compare with the latest load only: X -> Y -> X must reload X.
+                previous = self._runs.latest_load(report.name)
+                duplicate = (
+                    previous is not None
+                    and previous.run_id != ctx.run_id
+                    and previous.data_hash == dataset.fingerprint
+                )
                 stage.message = (
                     f"identical data already loaded by run {previous.run_id}"
                     if duplicate and previous
@@ -166,19 +186,25 @@ class PipelineOrchestrator:
                 return
 
             ingested_at = utcnow()
-            with tracker.stage("load") as stage:
-                inserted = call_with_retry(
-                    lambda _: self._loader.load(
-                        destination, dataset.frame, ctx.run_id, ingested_at
-                    ),
-                    policy,
-                    description="ClickHouse insert",
-                )
-                stage.message = f"{inserted:,} rows -> {destination.qualified_table}"
+            try:
+                with tracker.stage("load") as stage:
+                    inserted = call_with_retry(
+                        lambda _: self._loader.load(
+                            destination, dataset.frame, ctx.run_id, ingested_at
+                        ),
+                        policy,
+                        description="ClickHouse insert",
+                    )
+                    stage.message = f"{inserted:,} rows -> {destination.qualified_table}"
 
-            with tracker.stage("verify") as stage:
-                found = self._loader.verify(destination, ctx.run_id, inserted)
-                stage.message = f"{found:,} rows confirmed in ClickHouse"
+                with tracker.stage("verify") as stage:
+                    found = self._loader.verify(destination, ctx.run_id, inserted)
+                    stage.message = f"{found:,} rows confirmed in ClickHouse"
+            except DashDashGoError:
+                # Some batches may have landed before the failure: remove them so the
+                # table is exactly as it was before this run.
+                self._rollback(destination, ctx.run_id)
+                raise
             tracker.succeed(records_inserted=found)
             log.info("SUCCESS - %d rows loaded into %s", found, destination.qualified_table)
         except DashDashGoError as exc:
@@ -190,17 +216,26 @@ class PipelineOrchestrator:
             tracker.fail(exc)
             log.exception("FAILED with an unexpected error")
 
-    def _store_rejected(
-        self, ctx: RunContext, dataset: PreparedDataset, details: dict[str, object]
-    ) -> None:
-        if dataset.rejected.empty:
-            return
+    def _rollback(self, destination: DestinationConfig, run_id: str) -> None:
+        try:
+            self._loader.rollback(destination, run_id)
+        except DashDashGoError as exc:
+            log.error(
+                "Could not roll back rows of run %s (%s); remove them with: "
+                "DELETE FROM %s WHERE _run_id = '%s'",
+                run_id,
+                exc.message,
+                destination.qualified_table,
+                run_id,
+            )
+
+    def _store_rows(self, ctx: RunContext, rows: pd.DataFrame) -> str:
         buffer = io.StringIO()
-        dataset.rejected.to_csv(buffer, index=False)
+        rows.to_csv(buffer, index=False)
         stored = self._storage.put_bytes(
             buffer.getvalue().encode(), ctx.artifacts.key("failures", "rejected_rows.csv")
         )
-        details["rejected_file"] = stored.key
+        return stored.key
 
     def _store_processed(self, ctx: RunContext, dataset: PreparedDataset) -> None:
         """Typed Parquet copy of the loaded rows - useful, but not worth failing a run for."""

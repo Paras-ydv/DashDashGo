@@ -108,22 +108,32 @@ def evaluate(
     report = QualityReport(total, total - len(rejected), len(rejected), problems)
 
     if rejected and config.on_invalid_rows == "fail":
-        raise DataQualityError(f"invalid rows and on_invalid_rows=fail: {report.summary()}")
+        raise DataQualityError(
+            f"invalid rows and on_invalid_rows=fail: {report.summary()}", row_errors=errors
+        )
     if report.invalid_ratio > config.max_invalid_ratio:
         raise DataQualityError(
             f"{report.invalid_ratio:.1%} of rows invalid exceeds max_invalid_ratio "
-            f"{config.max_invalid_ratio:.1%}: {report.summary()}"
+            f"{config.max_invalid_ratio:.1%}: {report.summary()}",
+            row_errors=errors,
         )
 
+    valid_positions = [p for p in range(total) if p not in errors]
     valid = frame.drop(index=frame.index[rejected]).reset_index(drop=True)
     if len(valid) < config.min_rows:
-        raise DataQualityError(f"only {len(valid)} valid rows; min_rows is {config.min_rows}")
+        raise DataQualityError(
+            f"only {len(valid)} valid rows; min_rows is {config.min_rows}", row_errors=errors
+        )
 
     duplicated = valid.duplicated(subset=unique_key, keep=False)
     if duplicated.any():
         sample = valid.loc[duplicated, unique_key].head(3).to_dict(orient="records")
+        message = f"duplicate natural key {unique_key}"
         raise DataQualityError(
             f"{int(duplicated.sum())} rows share a natural key {unique_key}, e.g. {sample}; "
-            "add a drop_duplicates/pivot aggregate transform or fix the key"
+            "add a drop_duplicates/pivot aggregate transform or fix the key",
+            row_errors={
+                valid_positions[i]: [message] for i in duplicated[duplicated].index.tolist()
+            },
         )
     return QualityOutcome(valid, rejected, errors, report)

@@ -53,8 +53,13 @@ class RunRepository(ABC):
     def stages(self, run_id: str) -> list[StageRecord]: ...
 
     @abstractmethod
-    def find_ingested(self, report: str, data_hash: str) -> RunRecord | None:
-        """Latest successful run of ``report`` that loaded data with this fingerprint."""
+    def latest_load(self, report: str) -> RunRecord | None:
+        """The most recent run of ``report`` that loaded data (status SUCCESS).
+
+        Duplicate detection compares against this run only: if the data went
+        X -> Y -> X, the third run must load X again, not be skipped because
+        X was loaded once before.
+        """
 
     @abstractmethod
     def overview(self, window_days: int) -> OverviewStats: ...
@@ -117,10 +122,6 @@ CREATE TABLE IF NOT EXISTS `{db}`.pipeline_stage_events
 ENGINE = ReplacingMergeTree(updated_at)
 ORDER BY (run_id, stage, attempt)
 """
-
-# A CLI run whose process was killed (SIGKILL, closed terminal) cannot record its
-# own end. Stages update the run every few seconds, so hours of silence means dead.
-STALE_AFTER = timedelta(hours=6)
 
 # A CLI run whose process was killed (SIGKILL, closed terminal) cannot record its
 # own end. Stages update the run every few seconds, so hours of silence means dead.
@@ -215,12 +216,11 @@ class ClickHouseRunRepository(RunRepository):
             row["details"] = json.loads(row["details"] or "{}")
         return [StageRecord.model_validate(r) for r in rows]
 
-    def find_ingested(self, report: str, data_hash: str) -> RunRecord | None:
+    def latest_load(self, report: str) -> RunRecord | None:
         rows = self._ch.query_rows(
             f"SELECT * FROM {self._runs} FINAL WHERE report = {{report:String}} "
-            "AND data_hash = {hash:String} AND status = 'SUCCESS' "
-            "ORDER BY started_at DESC LIMIT 1",
-            {"report": report, "hash": data_hash},
+            "AND status = 'SUCCESS' ORDER BY started_at DESC LIMIT 1",
+            {"report": report},
         )
         return self._run(rows[0]) if rows else None
 

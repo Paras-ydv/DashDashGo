@@ -190,7 +190,9 @@ def test_run_repository_roundtrip(clickhouse: ClickHouse, database: str) -> None
     assert stored is not None and stored.status is RunStatus.SUCCESS  # latest version wins
     assert stored.started_at.tzinfo is not None
     assert repo.stages(run.run_id)[0].details == {"rows": 5}
-    assert repo.find_ingested("r", "abc") is not None and repo.find_ingested("r", "zzz") is None
+    latest = repo.latest_load("r")
+    assert latest is not None and latest.data_hash == "abc"
+    assert repo.latest_load("no_such_report") is None
     assert repo.overview(7).successful_runs == 1
     assert repo.report_stats("r").rows_inserted == 5
 
@@ -219,3 +221,17 @@ def test_mark_interrupted_only_touches_server_runs(clickhouse: ClickHouse, datab
     assert interrupted is not None and interrupted.status is RunStatus.FAILED
     still_running = repo.get_run(cli_run.run_id)
     assert still_running is not None and still_running.status is RunStatus.RUNNING
+
+
+def test_rollback_restores_the_previous_version(clickhouse: ClickHouse, database: str) -> None:
+    loader = WarehouseLoader(clickhouse)
+    dest = destination(database, table="rollback")
+    loader.prepare(dest)
+    good, failed = new_run_id(), new_run_id()
+    loader.load(dest, rows("10.50"), good, utcnow())
+    loader.load(dest, rows("99.99"), failed, utcnow() + timedelta(seconds=1))
+    loader.rollback(dest, failed)
+    page = ReportDataReader(clickhouse).fetch(dest)
+    assert page.total == 2
+    assert {r["_run_id"] for r in page.rows} == {good}
+    assert next(r for r in page.rows if r["region"] == "East")["revenue"] == Decimal("10.50")

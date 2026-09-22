@@ -59,6 +59,8 @@ class FakeLoader:
         self.tables: dict[str, list[dict[str, Any]]] = {}
         self.fail_times = fail_times
         self.load_calls = 0
+        self.fail_verify = False
+        self.rolled_back: list[str] = []
 
     def prepare(self, destination: DestinationConfig) -> str:
         return "verified"
@@ -78,7 +80,17 @@ class FakeLoader:
         return len(rows)
 
     def verify(self, destination: DestinationConfig, run_id: str, expected_rows: int) -> int:
-        return sum(1 for r in self.tables[destination.qualified_table] if r["_run_id"] == run_id)
+        found = sum(1 for r in self.tables[destination.qualified_table] if r["_run_id"] == run_id)
+        if self.fail_verify:
+            from dashdashgo.errors import VerificationError
+
+            raise VerificationError(f"expected {expected_rows} rows, found {found}")
+        return found
+
+    def rollback(self, destination: DestinationConfig, run_id: str) -> None:
+        self.rolled_back.append(run_id)
+        rows = self.tables.get(destination.qualified_table, [])
+        self.tables[destination.qualified_table] = [r for r in rows if r["_run_id"] != run_id]
 
 
 @pytest.fixture
@@ -333,3 +345,80 @@ def test_interrupt_marks_run_failed_and_propagates(tmp_path: Path, report: Repor
         orchestrator.run(report, new_run(report.name))
     [final] = [r for r in runs.run_history if r.status.is_terminal]
     assert final.status is RunStatus.FAILED and final.error_type == "InterruptedError"
+
+
+def test_data_changing_back_is_loaded_again(tmp_path: Path, report: ReportConfig) -> None:
+    """X -> Y -> X: the third run must load X again (Y is what the table holds now)."""
+    storage = LocalStorage(tmp_path / "storage")
+    runs = InMemoryRunRepository()
+    loader = FakeLoader()
+    other = CSV.replace("10.50", "11.00")
+
+    def orchestrator(content: str) -> PipelineOrchestrator:
+        return PipelineOrchestrator(
+            acquisition=FakeAcquisition(storage, content),
+            ingestion=IngestionService(),
+            loader=loader,  # type: ignore[arg-type]
+            runs=runs,
+            storage=storage,
+        )
+
+    statuses = [
+        orchestrator(c).run(report, new_run(report.name)).run.status for c in (CSV, other, CSV, CSV)
+    ]
+    assert statuses == [RunStatus.SUCCESS, RunStatus.SUCCESS, RunStatus.SUCCESS, RunStatus.SKIPPED]
+
+
+@pytest.mark.parametrize(
+    ("policy", "status", "stored"),
+    [
+        ("quarantine", RunStatus.SUCCESS, True),
+        ("drop", RunStatus.SUCCESS, False),
+        ("fail", RunStatus.FAILED, True),
+    ],
+)
+def test_invalid_row_policies(
+    tmp_path: Path,
+    config_dict: dict[str, Any],
+    make_config: Callable[[dict[str, Any]], ReportConfig],
+    policy: str,
+    status: RunStatus,
+    stored: bool,
+) -> None:
+    config_dict["ingestion"]["quality"].update(on_invalid_rows=policy, max_invalid_ratio=0.5)
+    report = make_config(config_dict)
+    orchestrator, runs, _, storage = build(tmp_path)
+    run = orchestrator.run(report, new_run(report.name)).run
+    assert run.status is status
+    files = [o.key for o in storage.list(f"failures/{report.name}/")]
+    assert any(k.endswith("rejected_rows.csv") for k in files) is stored
+    if policy == "fail":  # the failed stage links the rows that caused it
+        quality = next(s for s in runs.stages(run.run_id) if s.stage == "quality")
+        assert quality.details["rejected_file"].endswith("rejected_rows.csv")
+
+
+def test_duplicate_key_failure_stores_the_duplicates(tmp_path: Path, report: ReportConfig) -> None:
+    storage = LocalStorage(tmp_path / "storage")
+    duplicated = "Date,Region,Revenue\n2026-09-14,East,1\n2026-09-14,East,2\n2026-09-15,West,3\n"
+    orchestrator = PipelineOrchestrator(
+        acquisition=FakeAcquisition(storage, duplicated),
+        ingestion=IngestionService(),
+        loader=FakeLoader(),  # type: ignore[arg-type]
+        runs=InMemoryRunRepository(),
+        storage=storage,
+    )
+    run = orchestrator.run(report, new_run(report.name)).run
+    assert run.error_type == "DataQualityError"
+    [key] = [o.key for o in storage.list(f"failures/{report.name}/")]
+    rows = storage.read_bytes(key).decode()
+    assert rows.count("duplicate natural key") == 2 and "West" not in rows
+
+
+def test_failed_verification_rolls_back_the_run(tmp_path: Path, report: ReportConfig) -> None:
+    loader = FakeLoader()
+    loader.fail_verify = True
+    orchestrator, _, _, _ = build(tmp_path, loader=loader)
+    run = orchestrator.run(report, new_run(report.name)).run
+    assert run.status is RunStatus.FAILED and run.error_type == "VerificationError"
+    assert loader.rolled_back == [run.run_id]
+    assert all(not rows for rows in loader.tables.values())

@@ -116,3 +116,16 @@ class WarehouseLoader:
                 f"{destination.qualified_table}, found {found}"
             )
         return found
+
+    def rollback(self, destination: DestinationConfig, run_id: str) -> None:
+        """Remove every row a failed run managed to insert.
+
+        Tables are versioned (ReplacingMergeTree), so after the delete each key
+        shows its previous version again: a failed run leaves no partial state.
+        """
+        self._ch.command(
+            f"DELETE FROM `{destination.database}`.`{destination.table}` "
+            "WHERE _run_id = {run_id:String}",
+            {"run_id": run_id},
+        )
+        log.warning("Rolled back rows of run %s from %s", run_id, destination.qualified_table)

@@ -61,13 +61,11 @@ class InMemoryRunRepository(RunRepository):
             key=lambda s: (s.started_at, s.attempt),
         )
 
-    def find_ingested(self, report: str, data_hash: str) -> RunRecord | None:
-        matches = [
-            r
-            for r in self.runs.values()
-            if r.report == report and r.data_hash == data_hash and r.status == RunStatus.SUCCESS
+    def latest_load(self, report: str) -> RunRecord | None:
+        loads = [
+            r for r in self.runs.values() if r.report == report and r.status == RunStatus.SUCCESS
         ]
-        return max(matches, key=lambda r: r.started_at) if matches else None
+        return max(loads, key=lambda r: r.started_at) if loads else None
 
     def overview(self, window_days: int) -> OverviewStats:
         since = utcnow() - timedelta(days=window_days)
