@@ -171,7 +171,8 @@ def test_unknown_filter_is_a_configuration_error(container: Container, e2e_db: s
 
 def test_unreachable_dashboard_is_retried_then_fails(container: Container, e2e_db: str) -> None:
     def unreachable(data: dict[str, Any]) -> None:
-        data["source"]["base_url"] = "http://127.0.0.1:9"  # discard port: connection refused
+        # Allowed host, discard port: connection refused.
+        data["source"]["base_url"] = "http://metabase:9"
         data["browser"]["navigation_timeout_ms"] = 5000
 
     result = run(

@@ -22,23 +22,35 @@ import yaml
 from pydantic import ValidationError
 
 from dashdashgo.config.models import ReportConfig
+from dashdashgo.config.policy import ConfigPolicy, hostname
 from dashdashgo.errors import ConfigurationError, ReportNotConfiguredError
 
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 REPORT_NAME = re.compile(r"[a-z][a-z0-9_]{1,62}")
 
 
-def interpolate_env(value: Any, env: Mapping[str, str], missing: set[str]) -> Any:
-    """Recursively substitute ``${VAR}`` / ``${VAR:-default}`` in strings."""
+def interpolate_env(
+    value: Any,
+    env: Mapping[str, str],
+    missing: set[str],
+    referenced: set[str] | None = None,
+) -> Any:
+    """Recursively substitute ``${VAR}`` / ``${VAR:-default}`` in strings.
+
+    Unset variables are added to ``missing``; every referenced name is added to
+    ``referenced`` (when given) so a policy can vet them.
+    """
     if isinstance(value, dict):
-        return {k: interpolate_env(v, env, missing) for k, v in value.items()}
+        return {k: interpolate_env(v, env, missing, referenced) for k, v in value.items()}
     if isinstance(value, list):
-        return [interpolate_env(v, env, missing) for v in value]
+        return [interpolate_env(v, env, missing, referenced) for v in value]
     if not isinstance(value, str):
         return value
 
     def replace(match: re.Match[str]) -> str:
         name, default = match.group(1), match.group(2)
+        if referenced is not None:
+            referenced.add(name)
         if name in env and env[name] != "":
             return env[name]
         if default is not None:
@@ -110,8 +122,19 @@ def validate_report(
     env: Mapping[str, str] | None = None,
 ) -> ReportConfig:
     env = os.environ if env is None else env
+    policy = ConfigPolicy.from_env(env)
     missing: set[str] = set()
-    resolved = interpolate_env(raw, env, missing)
+    referenced: set[str] = set()
+    resolved = interpolate_env(raw, env, missing, referenced)
+    if denied := policy.denied_env(referenced):
+        allowed = ", ".join(policy.env_allowlist)
+        raise ConfigurationError(
+            f"{source}: environment variables not allowed in configs: {', '.join(denied)} "
+            f"(allowed: {allowed}; see CONFIG_ENV_ALLOWLIST)",
+            problems=[
+                ("(environment)", f"{n} may not be referenced (allowed: {allowed})") for n in denied
+            ],
+        )
     if missing:
         names = ", ".join(sorted(missing))
         raise ConfigurationError(
@@ -134,6 +157,12 @@ def validate_report(
         raise ConfigurationError(
             f"{source}: invalid configuration\n{details}", problems=problems
         ) from None
+    if not policy.host_allowed(config.source.base_url):
+        message = (
+            f"dashboard host {hostname(config.source.base_url)!r} is not allowed "
+            f"(allowed: {', '.join(policy.allowed_hosts)}; see ALLOWED_DASHBOARD_HOSTS)"
+        )
+        raise ConfigurationError(f"{source}: {message}", problems=[("source.base_url", message)])
     if expected_name is not None and config.name != expected_name:
         message = f"'name' is {config.name!r} but must match the file name {expected_name!r}"
         raise ConfigurationError(f"{source}: {message}", problems=[("name", message)])

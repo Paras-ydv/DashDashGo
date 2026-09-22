@@ -25,6 +25,7 @@ from pydantic import (
 )
 
 from dashdashgo.columns import ColumnType, Kind, parse_column_type
+from dashdashgo.config.policy import blocked_launch_arg
 from dashdashgo.ingestion.transforms import TransformStep, parse_transform_step
 from dashdashgo.scheduling.cron import cron_trigger
 
@@ -237,6 +238,16 @@ class BrowserConfig(StrictModel):
     screenshot_on_failure: bool = True
     trace: Literal["off", "on_failure", "always"] = "on_failure"
     launch_args: list[str] = Field(default_factory=list)
+
+    @field_validator("launch_args")
+    @classmethod
+    def _safe_launch_args(cls, args: list[str]) -> list[str]:
+        if blocked := sorted({flag for a in args if (flag := blocked_launch_arg(a))}):
+            raise ValueError(
+                f"browser flags not allowed: {', '.join(blocked)} "
+                "(they could redirect the browser or expose it)"
+            )
+        return args
 
 
 # --- ingestion ----------------------------------------------------------------

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -206,3 +207,71 @@ def test_min_max_rules_only_on_numeric_columns(
     config_dict["ingestion"]["quality"]["rules"] = [{"column": "region", "min": 1}]
     with pytest.raises(ConfigurationError, match="only apply to numeric columns"):
         make_config(config_dict)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "env_extra", "message"),
+    [
+        (
+            lambda c: c["source"].setdefault("filters", {}).update(region="${CLICKHOUSE_PASSWORD}"),
+            {"CLICKHOUSE_PASSWORD": "x"},
+            "not allowed in configs: CLICKHOUSE_PASSWORD",
+        ),
+        (
+            lambda c: c["source"].setdefault("filters", {}).update(region="${HOME:-x}"),
+            {},
+            "not allowed in configs: HOME",
+        ),
+        (
+            # Denied even when an operator widens the allow-list to everything.
+            lambda c: c["source"].setdefault("filters", {}).update(region="${AI_API_KEY}"),
+            {"CONFIG_ENV_ALLOWLIST": "*", "AI_API_KEY": "k"},
+            "not allowed in configs: AI_API_KEY",
+        ),
+        (
+            lambda c: c["source"].update(base_url="https://evil.example.com"),
+            {},
+            "dashboard host 'evil.example.com' is not allowed",
+        ),
+        (
+            lambda c: c.update(browser={"launch_args": ["--proxy-server=http://evil:8080"]}),
+            {},
+            "browser flags not allowed: --proxy-server",
+        ),
+        (
+            lambda c: c.update(browser={"launch_args": ["--Remote-Debugging-Port=9222"]}),
+            {},
+            "--remote-debugging-port",
+        ),
+    ],
+)
+def test_config_policy_rejects_unsafe_configs(
+    config_dict: dict[str, Any],
+    write_config: Callable[[dict[str, Any]], Path],
+    mutate: Callable[[dict[str, Any]], None],
+    env_extra: dict[str, str],
+    message: str,
+) -> None:
+    mutate(config_dict)
+    with pytest.raises(ConfigurationError, match=re.escape(message)):
+        load_report_config(write_config(config_dict), {**TEST_ENV, **env_extra})
+
+
+def test_config_policy_can_be_widened(
+    config_dict: dict[str, Any], write_config: Callable[[dict[str, Any]], Path]
+) -> None:
+    config_dict["source"]["base_url"] = "https://bi.example.com"
+    config_dict["source"].setdefault("filters", {})["region"] = "${TEAM_REGION}"
+    config_dict["browser"] = {"launch_args": ["--lang=en-GB"]}
+    env = {
+        **TEST_ENV,
+        "ALLOWED_DASHBOARD_HOSTS": "bi.example.com, metabase.test",
+        "CONFIG_ENV_ALLOWLIST": "METABASE_*,TEAM_*",
+        "TEAM_REGION": "East",
+    }
+    config = load_report_config(write_config(config_dict), env)
+    assert config.source.base_url == "https://bi.example.com"
+    assert config.source.filters["region"] == "East"
+    assert load_report_config(
+        write_config(config_dict), {**env, "ALLOWED_DASHBOARD_HOSTS": "*"}
+    ).source.base_url == ("https://bi.example.com")
