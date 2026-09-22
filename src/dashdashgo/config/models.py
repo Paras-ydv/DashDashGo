@@ -117,6 +117,12 @@ class MetabaseSelectors(StrictModel):
     relative_date_option: str = "Relative date range…"
     list_search: str = "Search the list"
     apply_filter_button: str = r"^(Add|Update) filter$"
+    clear_filter_button: str = "Clear"
+    date_widget_icon: str = "calendar icon"
+    relative_date_tab: str = "Previous"
+    relative_date_interval: str = "Interval"
+    relative_date_unit: str = "Unit"
+    collection_title: str = "Add title"
 
 
 FILENAME_DATE_TOKEN = "{date}"

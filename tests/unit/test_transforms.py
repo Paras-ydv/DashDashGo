@@ -174,11 +174,32 @@ def test_parse_numbers_handles_formatted_exports() -> None:
     )
     assert out["spend"].tolist() == [Decimal("1234.56"), Decimal("-12.50"), None]
     assert out["clicks"].tolist() == [Decimal("12345"), Decimal("7"), Decimal("0")]
-    assert out["cpc"].tolist()[0] == pytest.approx(0.1, rel=1e-3)
+    assert out["cpc"].tolist()[0] == Decimal("1234.56") / Decimal("12345")  # exact
+    assert out["cpc"].tolist()[2] is None  # null in, null out
     with pytest.raises(TransformationError, match="non-number"):
         run(pd.DataFrame({"x": ["n/a"]}), {"parse_numbers": {"columns": ["x"]}})
 
 
 def test_compute_with_unknown_column_is_a_transformation_error() -> None:
-    with pytest.raises(TransformationError, match="'compute'"):
+    with pytest.raises(TransformationError, match="unknown column 'missing_column'"):
         run(pd.DataFrame({"a": [1]}), {"compute": {"columns": {"b": "a + missing_column"}}})
+
+
+def test_compute_is_exact_null_safe_and_supports_comparisons() -> None:
+    from decimal import Decimal
+
+    out = run(
+        pd.DataFrame({"a": ["0.1", None, "5"], "b": ["0.2", "1", "0"], "c": [1, 2, 3]}),
+        {"compute": {"columns": {"s": "a + b", "q": "a / b", "big": "c >= 2 and not c > 2"}}},
+    )
+    assert out["s"].tolist() == [Decimal("0.3"), None, Decimal("5")]
+    assert out["q"].tolist() == [Decimal("0.5"), None, None]  # x / 0 -> null, not inf
+    assert out["big"].tolist() == [False, True, False]
+
+
+@pytest.mark.parametrize(
+    "expression", ['__import__("os").system("id")', "a.real", "(lambda: 1)()", "'text'", "a[0]"]
+)
+def test_compute_rejects_anything_but_arithmetic(expression: str) -> None:
+    with pytest.raises(ValueError, match="invalid options for transform 'compute'"):
+        parse_transform_step({"compute": {"columns": {"x": expression}}})

@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class Kind(StrEnum):
@@ -60,6 +61,15 @@ def _unwrap(type_str: str, wrapper: str) -> tuple[str, bool]:
     return type_str, False
 
 
+def _valid_timezone(name: str | None) -> str | None:
+    if name is not None:
+        try:
+            ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(f"unknown timezone {name!r} in column type") from None
+    return name
+
+
 def parse_column_type(type_str: str) -> ColumnType:
     """Parse a ClickHouse type string; raise ``ValueError`` if unsupported."""
     raw = " ".join(type_str.split())
@@ -87,9 +97,11 @@ def parse_column_type(type_str: str) -> ColumnType:
     if inner == "DateTime":
         return ColumnType(raw, Kind.DATETIME, nullable)
     if m := _DATETIME_TZ_RE.match(inner):
-        return ColumnType(raw, Kind.DATETIME, nullable, timezone=m[1])
+        return ColumnType(raw, Kind.DATETIME, nullable, timezone=_valid_timezone(m[1]))
     if m := _DATETIME64_RE.match(inner):
-        return ColumnType(raw, Kind.DATETIME, nullable, scale=int(m[1]), timezone=m[2])
+        return ColumnType(
+            raw, Kind.DATETIME, nullable, scale=int(m[1]), timezone=_valid_timezone(m[2])
+        )
     raise ValueError(
         f"unsupported column type {type_str!r}; supported: String, FixedString(N), "
         "(U)Int8-64, Float32/64, Decimal(P,S), Bool, Date, Date32, DateTime, DateTime64, "

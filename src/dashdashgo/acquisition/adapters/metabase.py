@@ -2,9 +2,11 @@
 
 Navigates the way a person does - Our analytics -> collection -> dashboard ->
 card - using accessible names and test ids rather than layout CSS. Filters are
-applied through the dashboard's URL parameters (exactly what Metabase itself
-does when a filter widget changes), which avoids driving date-picker widgets
-that change between releases, and is verified afterwards.
+set by operating the dashboard's filter widgets (date shortcuts, the relative
+date editor, category lists) and/or through URL parameters (what Metabase
+itself does when a widget changes), per ``source.filter_mode``; the resulting
+parameter state is verified before downloading. Every UI hook comes from
+``MetabaseSelectors`` so a Metabase upgrade is a config change.
 """
 
 from __future__ import annotations
@@ -127,7 +129,7 @@ class MetabaseAdapter(DashboardAdapter):
         page.wait_for_url(re.compile(r"/collection/\d+"))
         # The URL changes before the page re-renders; wait until the header shows
         # this collection so we never search the previous collection's items.
-        title = self._main(page).get_by_role("textbox", name="Add title")
+        title = self._main(page).get_by_role("textbox", name=self.sel.collection_title)
         try:
             expect(title).to_have_value(name)
         except AssertionError as exc:
@@ -244,7 +246,7 @@ class MetabaseAdapter(DashboardAdapter):
             )
             if widget.count() == 0:
                 raise _WidgetUnavailable(f"no filter widget labelled '{item.label}'")
-            clear = widget.get_by_role("button", name="Clear")
+            clear = widget.get_by_role("button", name=self.sel.clear_filter_button)
             if clear.count():
                 clear.click()
                 try:
@@ -254,7 +256,7 @@ class MetabaseAdapter(DashboardAdapter):
             widget.locator(self.sel.parameter_widget_target).click()
             dialog = page.get_by_role("dialog", name=item.label)
             dialog.wait_for(state="visible")
-            if widget.get_by_role("img", name="calendar icon").count():
+            if widget.get_by_role("img", name=self.sel.date_widget_icon).count():
                 applied = self._choose_relative_date(dialog, item)
             else:
                 applied = self._choose_values(dialog, item)
@@ -276,9 +278,9 @@ class MetabaseAdapter(DashboardAdapter):
             shortcut.click()  # the same click a person makes; shortcuts apply at once
             return True
         dialog.get_by_role("button", name=self.sel.relative_date_option).click()
-        dialog.get_by_role("tab", name="Previous").click()
-        dialog.get_by_role("textbox", name="Interval").fill(str(amount))
-        dialog.get_by_role("textbox", name="Unit").click()
+        dialog.get_by_role("tab", name=self.sel.relative_date_tab).click()
+        dialog.get_by_role("textbox", name=self.sel.relative_date_interval).fill(str(amount))
+        dialog.get_by_role("textbox", name=self.sel.relative_date_unit).click()
         dialog.page.get_by_role("option", name=unit, exact=True).click()
         return False
 

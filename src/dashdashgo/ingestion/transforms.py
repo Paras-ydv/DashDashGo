@@ -16,15 +16,24 @@ writing one function here - the pipeline itself does not change.
 
 from __future__ import annotations
 
+import ast
 import json
+import operator
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalException, InvalidOperation
 from typing import Any, Literal
 
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field, SerializeAsAny, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializeAsAny,
+    ValidationError,
+    field_validator,
+)
 
 from dashdashgo.errors import TransformationError
 from dashdashgo.ingestion.frames import clean_number, is_missing, map_cells
@@ -424,20 +433,140 @@ def parse_numbers(frame: pd.DataFrame, options: SelectOptions) -> pd.DataFrame:
     return out
 
 
+# --- derived columns ------------------------------------------------------------------
+#
+# Expressions come from config files that can be edited in the UI, so they are
+# never handed to eval()/DataFrame.eval(). They are parsed once, checked
+# against a small whitelist of syntax, and interpreted row by row in exact
+# Decimal arithmetic (money stays exact; 0.1 + 0.2 == 0.3).
+
+_BINARY = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+_COMPARE = {
+    ast.Lt: operator.lt,
+    ast.LtE: operator.le,
+    ast.Gt: operator.gt,
+    ast.GtE: operator.ge,
+    ast.Eq: operator.eq,
+    ast.NotEq: operator.ne,
+}
+_ALLOWED_NODES = (
+    ast.Expression, ast.BinOp, ast.UnaryOp, ast.Compare, ast.BoolOp, ast.Name, ast.Load,
+    ast.Constant, ast.USub, ast.UAdd, ast.Not, ast.And, ast.Or,
+    *_BINARY, *_COMPARE,
+)  # fmt: skip
+
+
+def parse_expression(expression: str) -> ast.Expression:
+    """Parse an arithmetic/comparison expression; reject anything else (calls, attributes...)."""
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"invalid expression {expression!r}: {exc.msg}") from None
+    for node in ast.walk(tree):
+        if not isinstance(node, _ALLOWED_NODES):
+            raise ValueError(
+                f"expression {expression!r} uses {type(node).__name__}; only column names, "
+                "numbers, + - * / % **, comparisons and and/or/not are allowed"
+            )
+        if isinstance(node, ast.Constant) and (
+            isinstance(node.value, bool) or not isinstance(node.value, int | float)
+        ):
+            raise ValueError(f"expression {expression!r}: only numeric constants are allowed")
+    return tree
+
+
+def _number(value: Any, column: str) -> Decimal | None:
+    if is_missing(value):
+        return None
+    if isinstance(value, bool):
+        return Decimal(int(value))
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, float):
+        return Decimal(repr(value))
+    try:
+        return Decimal(clean_number(str(value)))
+    except InvalidOperation:
+        raise TransformationError(
+            f"compute: column '{column}' holds a non-number {value!r}"
+        ) from None
+
+
+def _interpret(node: ast.AST, row: dict[str, Any]) -> Any:
+    """Evaluate one parsed expression for one row; any null operand gives null."""
+    if isinstance(node, ast.Expression):
+        return _interpret(node.body, row)
+    if isinstance(node, ast.Constant):
+        return Decimal(repr(node.value))
+    if isinstance(node, ast.Name):
+        if node.id not in row:
+            raise TransformationError(f"compute: unknown column '{node.id}'")
+        return _number(row[node.id], node.id)
+    if isinstance(node, ast.UnaryOp):
+        operand = _interpret(node.operand, row)
+        if operand is None:
+            return None
+        if isinstance(node.op, ast.Not):
+            return not operand
+        return -operand if isinstance(node.op, ast.USub) else +operand
+    if isinstance(node, ast.BinOp):
+        left, right = _interpret(node.left, row), _interpret(node.right, row)
+        if left is None or right is None:
+            return None
+        try:
+            return _BINARY[type(node.op)](left, right)
+        except (ZeroDivisionError, InvalidOperation, DecimalException):
+            return None  # x / 0 is unknown, not infinity
+    if isinstance(node, ast.Compare):
+        left = _interpret(node.left, row)
+        for op, comparator in zip(node.ops, node.comparators, strict=True):
+            right = _interpret(comparator, row)
+            if left is None or right is None:
+                return None
+            if not _COMPARE[type(op)](left, right):
+                return False
+            left = right
+        return True
+    if isinstance(node, ast.BoolOp):
+        values = [_interpret(v, row) for v in node.values]
+        if any(v is None for v in values):
+            return None
+        return all(values) if isinstance(node.op, ast.And) else any(values)
+    raise TransformationError(f"compute: unsupported syntax {type(node).__name__}")
+
+
 class ComputeOptions(TransformOptions):
     columns: dict[str, str] = Field(
-        min_length=1, description="new_column: arithmetic expression over numeric columns"
+        min_length=1,
+        description="new_column: expression over columns, e.g. 'actual - budget' or "
+        "'(on_hand - reserved) <= reorder_point'",
     )
+
+    @field_validator("columns")
+    @classmethod
+    def _expressions_are_safe(cls, value: dict[str, str]) -> dict[str, str]:
+        for expression in value.values():
+            parse_expression(expression)
+        return value
 
 
 @transform("compute", ComputeOptions)
 def compute(frame: pd.DataFrame, options: ComputeOptions) -> pd.DataFrame:
-    """Derive columns from arithmetic expressions, e.g. variance = actual - budget."""
+    """Derive columns from expressions in exact Decimal arithmetic (variance = actual - budget)."""
     out = frame.copy()
     for name, expression in options.columns.items():
-        referenced = [c for c in out.columns if re.search(rf"\b{re.escape(c)}\b", expression)]
-        numeric = out[referenced].apply(pd.to_numeric, errors="coerce")
-        result = numeric.eval(expression, engine="python")
-        out[name] = pd.Series(result, index=out.index).astype(object)
-        out[name] = out[name].where(out[name].notna(), None)
+        tree = parse_expression(expression)
+        rows = [{str(k): v for k, v in r.items()} for r in out.to_dict(orient="records")]
+        out[name] = pd.Series(
+            [_interpret(tree, row) for row in rows], index=out.index, dtype=object
+        )
     return out
