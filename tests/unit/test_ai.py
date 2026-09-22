@@ -370,6 +370,7 @@ def test_a_draft_that_stays_invalid_is_returned_with_its_problems(
 def test_draft_rejects_bad_samples(client: TestClient) -> None:
     assert _draft(client, filename="report.pdf").status_code == 422
     assert _draft(client, name="Bad Name").status_code == 422
+    assert _draft(client, from_report="no_such_report").status_code == 422
     bad = client.post(
         "/api/reports/x_report/config/draft",
         json={"filename": "a.csv", "content_base64": "%%%"},

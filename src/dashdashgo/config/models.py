@@ -177,7 +177,9 @@ class FilterItem:
 class MetabaseSource(StrictModel):
     platform: Literal["metabase"] = "metabase"
     base_url: str = Field(pattern=r"^https?://[^\s/]+")
-    login_path: str = "/auth/login"
+    # A path on base_url only: "@evil.example/" would turn base_url into userinfo and send
+    # the browser (and the credentials) to another host.
+    login_path: str = Field(default="/auth/login", pattern=r"^/([^/@\s\\][^@\s\\]*)?$")
     credentials: Credentials
     location: MetabaseLocation
     filters: dict[str, str | list[str] | FilterSpec] = Field(

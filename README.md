@@ -192,7 +192,7 @@ sequenceDiagram
 | | |
 |---|---|
 | ![Pipeline page](docs/images/ui-pipeline.png) **Pipeline page:** stages derived from the config (source, acquire, transform, validate, load), statistics, duration chart, history, live data preview | ![Run timeline](docs/images/ui-run-timeline.png) **Run detail:** live timeline with every browser step (here both dashboard filters were set through the widgets), row counts, artifacts under their configured file names |
-| ![Quarantined rows](docs/images/ui-run-quarantine.png) **Data quality:** two corrupt inventory rows quarantined (link to the rejected-rows CSV with reasons); 22 valid rows loaded | ![Failed run](docs/images/ui-run-failure.png) **A failed run:** error panel, failure screenshot, the failing step, and a Retry button |
+| ![Quarantined rows](docs/images/ui-run-quarantine.png) **Data quality:** two corrupt inventory rows quarantined (link to the rejected-rows CSV with reasons); 22 valid rows loaded | ![Failed run](docs/images/ui-run-failure.png) **A failed run:** error panel, an AI diagnosis (wrong password, 98% confidence), failure screenshot, the failing step, and a Retry button |
 | ![Screenshot viewer](docs/images/ui-screenshot-viewer.png) **Failure screenshot** in the in-page viewer: Metabase rejected the password | ![Diagnostic card](docs/images/ui-diagnostic-card.png) **Nothing rendered** (dashboard unreachable): a diagnostic card is drawn instead of a blank image |
 | ![Config editor](docs/images/ui-config-editor.png) **Config editor:** live validation mapped to lines, history, archive | ![Runs](docs/images/ui-runs.png) **Run history** across pipelines, filterable by pipeline and status |
 | ![Metabase dashboard](docs/images/metabase-dashboard.png) **The source:** the Metabase *Support Overview* dashboard DashDashGo operates, with its Priority filter open | ![API docs](docs/images/api-docs.png) **API** (OpenAPI at `/docs`): runs, data (JSON/CSV), configs, artifacts |
@@ -885,7 +885,7 @@ file hash is still recorded for audit. Use `--force` or **Force reload** to load
 re-ingested with *partially* overlapping data (`customer_usage` runs daily over a rolling
 7-day window, so consecutive runs share 6 days), the newest version of each key replaces
 the older one. Reads use `FINAL`, so consumers see one row per key immediately, even before
-background merges run. Nothing is deleted by DashDashGo. The quality stage rejects a batch
+background merges run. The quality stage rejects a batch
 that contains duplicate keys itself, because ClickHouse would otherwise silently keep an
 arbitrary one.
 
@@ -897,9 +897,12 @@ ClickHouse. Verification then counts rows by `_run_id`, so a partial or doubled 
 caught.
 
 **Rollback.** If a load or its verification fails after some batches were written,
-DashDashGo deletes that run's rows (`DELETE FROM <table> WHERE _run_id = ...`). Because the
-tables are versioned, each key then shows its previous version again: a failed run leaves the
-table exactly as it was.
+DashDashGo deletes that run's rows (`DELETE FROM <table> WHERE _run_id = ...`), so no partial
+load stays visible. This is the only thing DashDashGo ever deletes. Because the tables are
+versioned, keys the failed run overwrote normally show their previous version again; if a
+background merge ran in the few seconds between the insert and the delete, those older
+versions may already be merged away and the keys come back on the next successful run.
+(Most report loads are a single batch, so this window rarely exists.)
 
 Every row also carries `_run_id`, so any row in any table can be traced to the run, the raw
 file and the logs that produced it.
@@ -999,8 +1002,9 @@ incrementally (the run log) can be uploaded when they close.
   variables matching `CONFIG_ENV_ALLOWLIST` (default `METABASE_*,DASHBOARD_*,REPORT_*`) may be
   referenced, and `CLICKHOUSE_*`, `POSTGRES_*`, `AI_*`, `AUTH_*` are always refused.
 - **Credentials only go to allowed hosts.** A config's `base_url` must be on
-  `ALLOWED_DASHBOARD_HOSTS` (default: the host of `METABASE_URL`), so an edited config can't
-  send the dashboard password to another server.
+  `ALLOWED_DASHBOARD_HOSTS` (default: the host of `METABASE_URL`), and `login_path` must be a
+  plain path (no `@`, which would turn the URL into `user@other-host`), so an edited config
+  can't send the dashboard password to another server.
 - **Browser flags are vetted.** `browser.launch_args` may not set proxies, host-resolver
   rules, remote debugging, a user-data dir, `--disable-web-security` or extensions.
 - These checks run wherever a config is validated: files, the UI editor, the API, `--set`
@@ -1018,7 +1022,7 @@ Two features, both off unless `AI_API_KEY` is set, and both only *suggest*:
   cause, category, suggested fix and confidence. If the fix is a config change, it is
   offered as `key.path=value` overrides **only after they validate** exactly like a
   hand-written `--set` (schema plus the security allow-lists; identity, credentials,
-  `base_url` and browser flags are never touched). **Retry with suggested change** applies
+  `base_url`/`login_path`, the destination and browser flags are never touched). **Retry with suggested change** applies
   them to that retry only; the config file is unchanged. The diagnosis is stored with the
   run (`logs/.../ai_diagnosis.json`).
 - **Draft with AI** (New pipeline page, or `dashdashgo ai draft <name> --sample FILE`).

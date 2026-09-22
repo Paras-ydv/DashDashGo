@@ -61,7 +61,14 @@ CATEGORIES = (
     "unknown",
 )
 # Paths an AI-suggested override may never touch: identity, secrets, targets.
-_PROTECTED_PATHS = ("name", "source.credentials", "source.base_url", "browser.launch_args")
+_PROTECTED_PATHS = (
+    "name",
+    "source.credentials",
+    "source.base_url",
+    "source.login_path",
+    "browser.launch_args",
+    "destination",
+)
 _OVERRIDE = re.compile(r"^[a-z_][a-z0-9_]*(\.[A-Za-z0-9_]+)+=.*$", re.DOTALL)
 
 
@@ -112,7 +119,8 @@ Reply with a JSON object with exactly these keys:
                     "browser.navigation_timeout_ms=90000", "source.filter_mode=url",
                     "source.selectors.export_menu=Download results".
                     Only keys that exist in the config schema. Never change
-                    name, source.credentials, source.base_url or browser.launch_args.
+                    name, source.credentials, source.base_url, source.login_path,
+                    browser.launch_args or destination.
                     Empty list when the fix is not a config change.
   "confidence":     0..1
 Be precise and brief. Do not invent evidence."""

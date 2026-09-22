@@ -275,3 +275,12 @@ def test_config_policy_can_be_widened(
     assert load_report_config(
         write_config(config_dict), {**env, "ALLOWED_DASHBOARD_HOSTS": "*"}
     ).source.base_url == ("https://bi.example.com")
+
+
+@pytest.mark.parametrize("login_path", ["@evil.example/", "//evil.example/login", "auth/login"])
+def test_login_path_cannot_redirect_to_another_host(
+    config_dict: dict[str, Any], write_config: Callable[[dict[str, Any]], Path], login_path: str
+) -> None:
+    config_dict["source"]["login_path"] = login_path
+    with pytest.raises(ConfigurationError, match="login_path"):
+        load_report_config(write_config(config_dict), TEST_ENV)

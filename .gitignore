@@ -25,3 +25,6 @@ build/
 .DS_Store
 .idea/
 .vscode/
+
+# The assessment brief (kept locally, not part of the repository)
+/DashDashGo_*.docx

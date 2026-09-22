@@ -19,7 +19,7 @@ from dashdashgo.ai.assistant import MAX_SAMPLE_BYTES, AIAssistant
 from dashdashgo.config.loader import REPORT_NAME
 from dashdashgo.distribution.api import _run_or_404
 from dashdashgo.distribution.state import AppState, get_state
-from dashdashgo.errors import AIError, AINotConfiguredError, DashDashGoError
+from dashdashgo.errors import AIError, AINotConfiguredError, ConfigurationError, DashDashGoError
 from dashdashgo.metadata.models import RunStatus
 
 router = APIRouter(prefix="/api", tags=["ai"])
@@ -92,6 +92,8 @@ def draft_config(request: Request, name: str, body: DraftRequest) -> dict[str, A
         raise HTTPException(422, "content_base64 is not valid base64") from exc
     try:
         draft = assistant.draft(name, body.filename, data, from_report=body.from_report)
+    except ConfigurationError as exc:  # e.g. an unknown "from_report"
+        raise HTTPException(422, exc.message) from exc
     except DashDashGoError as exc:
         if isinstance(exc, AIError) and not isinstance(exc, AINotConfiguredError):
             # Sample problems (format, empty file) are the caller's to fix.
