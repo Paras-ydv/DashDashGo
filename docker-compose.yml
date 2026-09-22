@@ -73,10 +73,12 @@ services:
       start_period: 60s
 
   # One-shot: creates the demo dashboards/questions in Metabase (idempotent).
+  # The script is standard-library only, so it runs on a stock Python image.
   metabase-seed:
-    build: .
-    image: dashdashgo:local
-    command: ["python", "demo/metabase_seed.py"]
+    image: python:3.12-slim-bookworm
+    command: ["python", "/demo/metabase_seed.py"]
+    volumes:
+      - ./demo:/demo:ro
     depends_on:
       metabase:
         condition: service_healthy
@@ -92,8 +94,11 @@ services:
   # DashDashGo: API + UI + scheduler (http://localhost:8000)
   # ---------------------------------------------------------------------------
   app:
-    build: .
-    image: dashdashgo:local
+    build:
+      context: .
+      # `runtime` for the service; `test` adds pytest + tests (make test-e2e, CI).
+      target: ${APP_BUILD_TARGET:-runtime}
+    image: dashdashgo:${APP_BUILD_TARGET:-runtime}
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -108,6 +113,15 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       SCHEDULER_ENABLED: ${SCHEDULER_ENABLED:-true}
       STORAGE_RETENTION_DAYS: ${STORAGE_RETENTION_DAYS:-30}
+      # Security (see README "Security"); empty = defaults / disabled.
+      AUTH_USERNAME: ${AUTH_USERNAME:-}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+      CONFIG_ENV_ALLOWLIST: ${CONFIG_ENV_ALLOWLIST:-}
+      ALLOWED_DASHBOARD_HOSTS: ${ALLOWED_DASHBOARD_HOSTS:-}
+      # Optional AI assistant; disabled while AI_API_KEY is empty.
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_MODEL: ${AI_MODEL:-}
     ports:
       - "127.0.0.1:${APP_PORT:-8000}:8000"
     volumes:

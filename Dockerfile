@@ -3,7 +3,11 @@
 # python:3.12-slim + `playwright install --with-deps chromium` installs only the
 # one browser we use (and exactly the system libraries it needs), keeping the
 # image far smaller than the all-browsers mcr.microsoft.com/playwright image.
-FROM python:3.12-slim-bookworm
+#
+# Targets:
+#   runtime (default)  the service: no test code, no test dependencies
+#   test               runtime + pytest + the test suite (make test-e2e, CI)
+FROM python:3.12-slim-bookworm AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -19,7 +23,7 @@ WORKDIR /app
 
 # 1) Third-party dependencies (cached until pyproject/uv.lock change).
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-install-project --no-dev --group test
+RUN uv sync --frozen --no-install-project --no-dev
 
 # 2) Chromium + its OS libraries (cached until the Playwright version changes).
 RUN playwright install --with-deps chromium \
@@ -29,9 +33,7 @@ RUN playwright install --with-deps chromium \
 # 3) The application itself.
 COPY README.md ./
 COPY src ./src
-RUN uv sync --frozen --no-dev --group test
-COPY demo ./demo
-COPY tests ./tests
+RUN uv sync --frozen --no-dev
 COPY reports ./reports
 
 # Report configs live on a volume at /data/reports so they can be edited from the
@@ -40,16 +42,28 @@ COPY reports ./reports
 RUN useradd --create-home --uid 10001 dashdashgo \
     && mkdir -p /data/storage /data/reports \
     && chown -R dashdashgo:dashdashgo /data
-USER dashdashgo
 
 ENV REPORTS_DIR=/data/reports \
     BUNDLED_REPORTS_DIR=/app/reports \
     STORAGE_ROOT=/data/storage \
-    API_PORT=8000 \
-    PYTEST_ADDOPTS="-p no:cacheprovider"
+    API_PORT=8000
 
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"
 
 CMD ["dashdashgo", "serve"]
+
+
+# --- test: the same image plus pytest and the suites -----------------------------
+FROM base AS test
+RUN uv sync --frozen --no-dev --group test
+COPY demo ./demo
+COPY tests ./tests
+ENV PYTEST_ADDOPTS="-p no:cacheprovider"
+USER dashdashgo
+
+
+# --- runtime (default, last so a plain `docker build` produces it) ---------------
+FROM base AS runtime
+USER dashdashgo

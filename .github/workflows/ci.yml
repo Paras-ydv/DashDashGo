@@ -98,6 +98,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: [quality]
+    env:
+      # The test image = the runtime image + pytest and the suites.
+      APP_BUILD_TARGET: test
     steps:
       - uses: actions/checkout@v4
 
@@ -125,6 +128,11 @@ jobs:
           docker compose exec -T app dashdashgo run weekly_sales
           docker compose exec -T app dashdashgo runs --limit 5
           curl -fsS http://localhost:8000/api/health
+
+      - name: The runtime image ships no tests or test tooling
+        run: |
+          docker build -q --target runtime -t dashdashgo:runtime .
+          docker run --rm dashdashgo:runtime sh -c '! python -c "import pytest" 2>/dev/null && test ! -e /app/tests'
 
       - name: Service logs
         if: failure()

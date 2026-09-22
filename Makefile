@@ -66,11 +66,13 @@ test-integration: ## Python <-> ClickHouse tests against the running stack
 	$(HOST_ENV) uv run pytest -m integration
 
 .PHONY: test-e2e
-test-e2e: ## Full Metabase -> Playwright -> ClickHouse tests inside the app container
+test-e2e: ## Full Metabase -> Playwright -> ClickHouse tests (rebuilds the app with the test target)
+	APP_BUILD_TARGET=test $(COMPOSE) up -d --build --wait app
 	$(COMPOSE) exec app pytest -m e2e
 
 .PHONY: test-all
-test-all: ## Every test suite, inside the app container
+test-all: ## Every test suite, inside the app container (test target)
+	APP_BUILD_TARGET=test $(COMPOSE) up -d --build --wait app
 	$(COMPOSE) exec app pytest -m ""
 
 .PHONY: lint
