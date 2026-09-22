@@ -45,6 +45,7 @@ A new report is a YAML file, not new code.
 - [ClickHouse schema design](#clickhouse-schema-design)
 - [Storage](#storage)
 - [Security](#security)
+- [AI assistant (optional)](#ai-assistant-optional)
 - [Testing and CI](#testing-and-ci)
 - [Design decisions and trade-offs](#design-decisions-and-trade-offs)
 - [Limitations](#limitations)
@@ -103,7 +104,7 @@ URLs.
 
 ```bash
 curl -s http://localhost:8000/api/health
-# {"status":"ok","version":"1.0.0","clickhouse":"up","scheduler":"running","reports":8}
+# {"status":"ok","version":"1.0.0","clickhouse":"up","scheduler":"running","reports":8,"ai":"disabled"}
 ```
 
 ### 4. Use it
@@ -179,7 +180,7 @@ sequenceDiagram
 | What | Seeded by | When |
 |---|---|---|
 | Demo source data (sales, usage, finance, support, marketing, inventory, web, billing) | `docker/postgres/init/*.sh` + `sql/*.sql` | First start of the `postgres-data` volume |
-| Metabase admin, database connection, 5 collections, 8 questions, 5 dashboards with filters | `demo/metabase_seed.py` (the `metabase-seed` service) | Every `up`; idempotent (looks up by name first) |
+| Metabase admin, database connection, 5 collections, 8 questions, 5 dashboards with filters | `demo/metabase_seed.py` (the `metabase-seed` service, a stock `python:3.12-slim` container; the script needs only the standard library) | Every `up`; idempotent (looks up by name first) |
 | Report configs (`reports/*.yaml`) | the app at startup | Once per report, into the `app-reports` volume |
 | ClickHouse metadata tables | the app at startup | Every start (`CREATE ... IF NOT EXISTS`, additive `ALTER`) |
 | Report tables (`analytics.*`) | the first run of each pipeline | Created from the config's schema |
@@ -195,6 +196,7 @@ sequenceDiagram
 | ![Screenshot viewer](docs/images/ui-screenshot-viewer.png) **Failure screenshot** in the in-page viewer: Metabase rejected the password | ![Diagnostic card](docs/images/ui-diagnostic-card.png) **Nothing rendered** (dashboard unreachable): a diagnostic card is drawn instead of a blank image |
 | ![Config editor](docs/images/ui-config-editor.png) **Config editor:** live validation mapped to lines, history, archive | ![Runs](docs/images/ui-runs.png) **Run history** across pipelines, filterable by pipeline and status |
 | ![Metabase dashboard](docs/images/metabase-dashboard.png) **The source:** the Metabase *Support Overview* dashboard DashDashGo operates, with its Priority filter open | ![API docs](docs/images/api-docs.png) **API** (OpenAPI at `/docs`): runs, data (JSON/CSV), configs, artifacts |
+| ![AI diagnosis](docs/images/ui-ai-diagnosis.png) **AI diagnosis** of a failed run (optional): cause, category, fix, and a *validated* config change applied by **Retry with suggested change** | ![AI draft](docs/images/ui-ai-draft.png) **Draft with AI:** a sample export in, a complete config out (types, transforms, rules), validated before it can be created |
 | ![Run metadata in ClickHouse](docs/images/clickhouse-metadata.png) **Run metadata** in ClickHouse (`dashdashgo.pipeline_runs`): trigger, status, rows in / rejected / loaded, duration, error | ![Loaded data in ClickHouse](docs/images/clickhouse-data.png) **Loaded data** (`analytics.inventory_snapshot`): typed columns (`Bool`, `Decimal`), flattened supplier JSON, `_run_id` lineage |
 
 ---
@@ -228,7 +230,9 @@ more that each exercise something different.
 - **Pipeline management in the UI:** create, edit (live validation, errors mapped to lines), duplicate, version history and restore, and archive, with conflict protection and a guarantee that secrets stay in environment variables.
 - **A complete CLI:** everything the UI does, plus per-run overrides (`--set key=value`, `--headed`, `--no-retry`, `--config FILE`).
 - **UI and API:** an operations UI (overview, pipeline page, run history, run detail with timeline, screenshots, logs and retry) and a JSON API that serves ingested data as JSON or CSV.
-- **Quality gates:** 179 unit tests, 8 ClickHouse integration tests and 18 end-to-end tests, plus `ruff` and `mypy --strict`, all run by GitHub Actions CI.
+- **Security:** optional login, cross-site request protection, and allow-lists for the environment variables, dashboard hosts and browser flags a config may use.
+- **Optional AI assistant:** diagnoses failed runs from their evidence and drafts configs from a sample export (free Gemini key; off without one).
+- **Quality gates:** 233 unit tests, 9 ClickHouse integration tests and 18 end-to-end tests, plus `ruff` and `mypy --strict`, all run by GitHub Actions CI.
 
 ---
 
@@ -257,11 +261,13 @@ transformation, ClickHouse ingestion and Docker Compose. Everything below was ad
   corrupt rows to quarantine, and monthly cron.
 - 13 declarative transforms, including `pivot`, `flatten`, `parse_json`, `parse_numbers` and
   `compute`; schema-driven type coercion (currency, accounting negatives, locale dates,
-  time zones, exact decimals, ClickHouse range checks).
+  time zones, exact decimals, ClickHouse range checks). `compute` evaluates arithmetic and
+  comparisons exactly (Decimal, null-safe) with a whitelisted grammar - no `eval`.
 - Data-quality rules with **fail / drop / quarantine** policies, a maximum invalid ratio,
   a rejected-rows CSV, and natural-key uniqueness.
 - **Idempotency in three layers:** content fingerprint (SKIPPED runs), ReplacingMergeTree on
-  the natural key (overlapping windows), and insert deduplication tokens (safe retries).
+  the natural key (overlapping windows), and insert deduplication tokens (safe retries); a
+  failed load is **rolled back** so no partial batch stays behind.
 - Schema drift detection before the browser starts; lineage columns (`_run_id`,
   `_ingested_at`) on every row; typed Parquet copy of loaded data.
 
@@ -280,7 +286,12 @@ transformation, ClickHouse ingestion and Docker Compose. Everything below was ad
 - **Scheduling** from each config's cron (standard cron semantics), hot-reloaded on edit;
   per-report locking across processes; interrupted and stale runs cleaned up on start.
 - Structured per-run JSON logs, secret redaction everywhere, and *Executed on* tracking.
-- **Quality gates:** 179 unit tests, 8 ClickHouse integration tests and 18 end-to-end tests,
+- **Security:** optional HTTP Basic login, cross-site request refusal, and allow-lists for
+  `${VAR}` references, dashboard hosts and Chromium flags (see [Security](#security)).
+- **Optional AI assistant:** "Diagnose with AI" on failed runs with a one-click, validated
+  retry, and "Draft with AI" from a sample export (see [AI assistant](#ai-assistant-optional)).
+- **Separate runtime and test images:** the service image ships no tests or pytest.
+- **Quality gates:** 233 unit tests, 9 ClickHouse integration tests and 18 end-to-end tests,
   `ruff`, `mypy --strict`, and GitHub Actions CI that builds and tests the whole stack.
 
 ---
@@ -381,7 +392,8 @@ the run executes.
 ├── .github/workflows/ci.yml    # lint + types + unit, ClickHouse integration, Compose e2e
 ├── reports/                    # one YAML per pipeline (edit here, in the UI or via the CLI)
 ├── src/dashdashgo/
-│   ├── config/                 # typed models, YAML loader (${ENV}, --set overrides), versioned store
+│   ├── config/                 # typed models, YAML loader (${ENV}, --set overrides), versioned store,
+│   │                           #   policy.py: env / dashboard-host / browser-flag allow-lists
 │   ├── acquisition/
 │   │   ├── adapters/           # DashboardAdapter interface + MetabaseAdapter
 │   │   ├── browser.py          # Playwright browser/context lifecycle, tracing
@@ -398,13 +410,15 @@ the run executes.
 │   ├── orchestration/          # PipelineOrchestrator, RunService (locking, background runs)
 │   ├── scheduling/             # APScheduler wiring, standard-cron translation
 │   ├── storage/                # StorageBackend interface + LocalStorage
-│   ├── distribution/           # FastAPI app: api.py, ui.py, templates/, static/
+│   ├── distribution/           # FastAPI app: api.py, config_api.py, ai_api.py, ui.py,
+│   │                           #   security.py (login + cross-site protection), templates/, static/
+│   ├── ai/                     # optional assistant: OpenAI-compatible client, diagnosis, drafting
 │   ├── observability/          # structured logging, run context, secret redaction
 │   ├── columns.py              # the supported ClickHouse type model
 │   ├── errors.py               # exception hierarchy (retryable? which stage?)
 │   ├── container.py            # composition root
 │   └── cli/                    # dashdashgo run | runs | show | logs | retry | data | stats | config ...
-├── demo/metabase_seed.py       # creates the demo Metabase content (test environment only)
+├── demo/metabase_seed.py       # creates the demo Metabase content (stdlib only; runs on python:3.12-slim)
 ├── docker/postgres/init/       # demo "upstream warehouse" behind Metabase (test environment only)
 ├── tests/{unit,integration,e2e}/
 ├── Dockerfile · docker-compose.yml · Makefile · .env.example
@@ -430,6 +444,11 @@ only.
 | `STORAGE_RETENTION_DAYS` | Artifact retention (0 = keep forever) |
 | `MAX_CONCURRENT_RUNS` | Background worker threads (default 2) |
 | `APP_PORT` | Host port for the UI/API (default 8000) |
+| `AUTH_USERNAME`, `AUTH_PASSWORD` | Optional HTTP Basic login for the UI and API (off while either is empty) |
+| `CONFIG_ENV_ALLOWLIST` | Glob patterns of variables configs may reference (default `METABASE_*,DASHBOARD_*,REPORT_*`) |
+| `ALLOWED_DASHBOARD_HOSTS` | Hosts a config may target (default: the host of `METABASE_URL`; `*` = any) |
+| `AI_API_KEY`, `AI_BASE_URL`, `AI_MODEL` | Optional AI assistant (see [AI assistant](#ai-assistant-optional)) |
+| `APP_BUILD_TARGET` | Docker build target for the app: `runtime` (default) or `test` |
 
 ### Report config (`reports/<name>.yaml`)
 
@@ -541,7 +560,7 @@ $ dashdashgo validate
 | `ingestion.reader.encoding` / `delimiter` / `sheet` / `header_row` / `records_path` | `utf-8-sig` / auto / first / 0 / – | How to read the file |
 | `ingestion.expected_columns` | `[]` | Columns the download must contain (detects upstream drift) |
 | `ingestion.transforms` | `[]` | Ordered steps (below) |
-| `ingestion.quality.on_invalid_rows` | `quarantine` | `fail`, `drop`, `quarantine` |
+| `ingestion.quality.on_invalid_rows` | `quarantine` | `quarantine`: skip invalid rows and save them with reasons to `rejected_rows.csv` · `drop`: skip them (counted and logged, not saved) · `fail`: fail the run (the offending rows are still saved for inspection) |
 | `ingestion.quality.max_invalid_ratio` / `min_rows` | `0.05` / `1` | Abort thresholds |
 | `ingestion.quality.rules[]` | `[]` | `{column, not_null, min, max, allowed, pattern}`; `min`/`max` on numeric columns only |
 | `destination.database` / `table` | *required* | ClickHouse target |
@@ -555,6 +574,12 @@ $ dashdashgo validate
 `change_case`, `fill_null`, `drop_duplicates`, `filter_rows`, `parse_json`, `flatten`,
 `pivot`, `parse_numbers` (for formatted exports such as `$1,234.56`) and `compute`. Type
 conversion is not a step: it's derived from `destination.columns`.
+
+`compute` expressions (`{columns: {margin: "revenue - cost", big: "orders >= 10"}}`) support
+numbers, column names, `+ - * / // % **`, comparisons and `and`/`or`/`not`. They are evaluated
+in `Decimal` (so `0.1 + 0.2` is exactly `0.3` in a `Decimal` column), a missing value or a
+division by zero gives null, and anything else (function calls, attributes, strings) is
+rejected when the config is validated.
 
 **Supported column types:** `String`, `FixedString(N)`, `(U)Int8–64`, `Float32/64`,
 `Decimal(P,S)`, `Bool`, `Date`, `Date32`, `DateTime[('tz')]`, `DateTime64(p[, 'tz'])`,
@@ -848,9 +873,10 @@ Running the same report twice must never silently duplicate data. DashDashGo use
 layers, each covering a different failure mode.
 
 **1. Dataset fingerprint (run level).** After validation, DashDashGo computes an
-order-independent SHA-256 of the cleaned dataset. If a previous *successful* run of the same
-report loaded identical content, the run ends as **SKIPPED** and links to that run; nothing
-is inserted. The fingerprint deliberately covers *data*, not file bytes: an XLSX export
+order-independent SHA-256 of the cleaned dataset. If the *latest* successful load of the same
+report had identical content, the run ends as **SKIPPED** and links to that run; nothing
+is inserted. Only the latest load counts: if the data goes X → Y → X, the third run loads X
+again, because Y's rows replaced X's in the meantime. The fingerprint deliberately covers *data*, not file bytes: an XLSX export
 embeds timestamps, so two downloads of identical data never have the same file hash. The
 file hash is still recorded for audit. Use `--force` or **Force reload** to load anyway.
 
@@ -869,6 +895,11 @@ arbitrary one.
 client after the server has already committed it, the retried batch is discarded by
 ClickHouse. Verification then counts rows by `_run_id`, so a partial or doubled load is
 caught.
+
+**Rollback.** If a load or its verification fails after some batches were written,
+DashDashGo deletes that run's rows (`DELETE FROM <table> WHERE _run_id = ...`). Because the
+tables are versioned, each key then shows its previous version again: a failed run leaves the
+table exactly as it was.
 
 Every row also carries `_run_id`, so any row in any table can be traced to the run, the raw
 file and the logs that produced it.
@@ -954,7 +985,67 @@ incrementally (the run log) can be uploaded when they close.
 - **Artifacts** are served from a whitelist of areas with traversal-safe keys. Captured
   HTML is served as `text/plain` with `nosniff`, so it can never execute in the app's origin.
 - **Containers:** the app runs as a non-root user, ports are bound to `127.0.0.1`, and
-  Metabase queries the demo warehouse through a read-only role.
+  Metabase queries the demo warehouse through a read-only role. The service image
+  (`runtime` target) contains no tests or test tooling.
+- **Login (optional).** Set `AUTH_USERNAME` and `AUTH_PASSWORD` (or `python3
+  scripts/make_env.py --auth`) and every page and API call needs HTTP Basic credentials,
+  except `/api/health` and static assets. Use `curl -u user:pass` for the API.
+- **Cross-site request protection.** Browsers resend Basic credentials automatically, so a
+  malicious page could otherwise start runs or rewrite configs. Every POST/PUT/DELETE whose
+  `Sec-Fetch-Site` is not `same-origin`/`none`, or whose `Origin` is another host, is refused
+  with 403. Scripts and the CLI send neither header and are unaffected.
+- **Configs can't read arbitrary secrets.** Anyone who can edit a config could otherwise
+  write `${CLICKHOUSE_PASSWORD}` into a filter value and see it in a URL or log. Only
+  variables matching `CONFIG_ENV_ALLOWLIST` (default `METABASE_*,DASHBOARD_*,REPORT_*`) may be
+  referenced, and `CLICKHOUSE_*`, `POSTGRES_*`, `AI_*`, `AUTH_*` are always refused.
+- **Credentials only go to allowed hosts.** A config's `base_url` must be on
+  `ALLOWED_DASHBOARD_HOSTS` (default: the host of `METABASE_URL`), so an edited config can't
+  send the dashboard password to another server.
+- **Browser flags are vetted.** `browser.launch_args` may not set proxies, host-resolver
+  rules, remote debugging, a user-data dir, `--disable-web-security` or extensions.
+- These checks run wherever a config is validated: files, the UI editor, the API, `--set`
+  overrides and AI-suggested changes.
+
+---
+
+## AI assistant (optional)
+
+Two features, both off unless `AI_API_KEY` is set, and both only *suggest*:
+
+- **Diagnose with AI** (failed runs). The run page (or `dashdashgo ai diagnose <run_id>`)
+  sends the run's error, stage timeline, log tail, config (secrets masked), the visible text
+  of the failed page and the failure screenshot to the model, and shows a summary, likely
+  cause, category, suggested fix and confidence. If the fix is a config change, it is
+  offered as `key.path=value` overrides **only after they validate** exactly like a
+  hand-written `--set` (schema plus the security allow-lists; identity, credentials,
+  `base_url` and browser flags are never touched). **Retry with suggested change** applies
+  them to that retry only; the config file is unchanged. The diagnosis is stored with the
+  run (`logs/.../ai_diagnosis.json`).
+- **Draft with AI** (New pipeline page, or `dashdashgo ai draft <name> --sample FILE`).
+  Upload a sample export (.csv/.xlsx/.json); it is parsed by the same readers as a run, and
+  the model gets a column profile, the first rows, a reference config ("Start from", default
+  `weekly_sales`) and the config JSON schema. The returned YAML is validated like a Save;
+  if it is invalid, the validator's problems go back to the model for one repair round.
+  Drafts get their own table, start unscheduled, and are never saved automatically.
+
+**Getting a free key (no billing needed).** The default provider is Google Gemini through its
+OpenAI-compatible endpoint:
+
+1. Open <https://aistudio.google.com/apikey>, sign in with a Google account and click
+   **Create API key**.
+2. Put it in `.env` as `AI_API_KEY=...` and run `docker compose up -d` (the app is recreated
+   with the key). `/api/health` then reports `"ai":"enabled"`.
+
+Any OpenAI-compatible provider works by setting `AI_BASE_URL` and `AI_MODEL`, for example
+Groq (<https://console.groq.com/keys>, `AI_BASE_URL=https://api.groq.com/openai/v1`) or
+OpenRouter (<https://openrouter.ai/keys>, `AI_BASE_URL=https://openrouter.ai/api/v1`, a
+`:free` model). Free tiers are often briefly overloaded, so `AI_MODEL` is a list tried in
+order (default `gemini-3.6-flash,gemini-flash-latest`). Each model is retried with backoff on
+429/5xx; a retired model (404) is skipped straight away.
+
+**Privacy.** Only the run evidence described above is sent. Registered secrets are masked
+before anything leaves the process, and credentials appear only as `**********`. The key is
+masked in logs like every other secret.
 
 ---
 
@@ -964,8 +1055,8 @@ A step-by-step **manual test script**, with the expected result for every featur
 mode, is in [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
 
 ```bash
-make test              # unit tests (179): no infrastructure needed, about 3 s
-make test-integration  # Python <-> ClickHouse (8): needs the stack running
+make test              # unit tests (233): no infrastructure needed, about 5 s
+make test-integration  # Python <-> ClickHouse (9): needs the stack running
 make test-e2e          # Metabase -> Playwright -> ClickHouse (18), inside the app container
 make test-all          # everything, inside the app container
 make lint              # ruff check + ruff format --check + mypy --strict
@@ -978,7 +1069,9 @@ make lint              # ruff check + ruff format --check + mypy --strict
 | **e2e** | all eight pipelines against the seeded Metabase; filters really set through the widgets (date + multi-select), relative periods without a shortcut, a value the widget doesn't offer, raw files stored under configured names; cleaning verified on real exports; duplicate run → SKIPPED; wrong password → 1 attempt, screenshot, no secret in artifacts; missing dashboard → not retried; unknown filter slug → ConfigurationError; unreachable dashboard → retried, then FAILED |
 
 E2E tests write to a throwaway ClickHouse database and storage directory and drop them
-afterwards.
+afterwards. They run in the app's **`test` image** (`APP_BUILD_TARGET=test`: the runtime
+image plus pytest and the suites); `make test-e2e` rebuilds the app with it. `docker compose
+up -d --build` switches back to the lean `runtime` image.
 
 **CI** (`.github/workflows/ci.yml`) runs on every push and pull request:
 
@@ -986,7 +1079,7 @@ afterwards.
 |---|---|
 | `quality` | ruff, format check, `mypy --strict`, validates the shipped configs, unit tests with Playwright Chromium installed (so the real-browser tests run) |
 | `integration` | the ClickHouse integration suite against a `clickhouse-server:25.8` service container |
-| `e2e` | `docker compose up --build` exactly as an evaluator would, waits for health, runs the e2e suite inside the app container, smoke-tests the CLI and API, and dumps service logs on failure |
+| `e2e` | `docker compose up --build` (with the `test` image) exactly as an evaluator would, waits for health, runs the e2e suite inside the app container, smoke-tests the CLI and API, checks that the `runtime` image contains no tests or pytest, and dumps service logs on failure |
 
 ---
 
@@ -997,7 +1090,7 @@ afterwards.
 | **One YAML per report, validated by Pydantic** | Adding a report is data, not code; typos fail in milliseconds with a precise location | The transform DSL is intentionally small; complex logic needs a new registered step |
 | **Destination schema declared in YAML, DDL generated** | One source of truth drives coercion, validation, DDL and drift checks | Schema changes need a manual `ALTER TABLE` (no automatic migrations) |
 | **Everything is `object` dtype until coercion** | pandas type inference drops leading zeros, turns ints into floats and behaves differently per format. Parsing once, from the schema, is predictable | Slower than vectorised parsing for very large files (fine for report-sized data) |
-| **Filters via URL parameters, then verified** | Robust across Metabase releases, unlike date-picker widgets | Relies on Metabase's documented parameter URLs; UI widget interaction isn't exercised |
+| **Filters through the widgets, URL as fallback, always verified** | `filter_mode: widget` operates the dashboard like a user; `url` uses Metabase's documented parameter URLs; `auto` tries widgets and falls back to the URL. Either way the applied values are read back | Widget automation depends on Metabase's UI labels (configurable in `source.selectors`, pinned version); the URL path depends on parameter slugs |
 | **Browser download instead of Metabase's export API** | The assignment is about browser automation, and the same approach works for dashboards that have no API | Slower and more fragile than an API call; mitigated by stable selectors, pinning and tests |
 | **Metadata in ClickHouse** | No extra database; the monitoring data lives next to the data it describes | ReplacingMergeTree + `FINAL` instead of real updates; fine at metadata scale |
 | **Scheduler in the API process, per-report `flock`** | Simple, one container, same code path as manual runs | One scheduler instance; horizontal scaling needs an external scheduler or queue |
@@ -1005,7 +1098,8 @@ afterwards.
 | **Config editing = raw YAML, validated live** | One representation for files, UI, CLI and review; the full config surface is available without a form for every option | Users edit YAML rather than fill a form; the live validation and line-mapped errors make up most of the difference |
 | **Configs on a Docker volume** | UI/CLI edits persist and the non-root app user can write them on any host OS | Edits live in the volume, not the git checkout; `make export-reports` brings them back |
 | **Postgres behind the demo Metabase** | Metabase's own app DB plus a small upstream warehouse whose data is generated *relative to today*, so "last week" and "last 7 days" always have data and re-downloads are byte-stable | One extra container, used only by the demo environment |
-| **`python:3.12-slim` + Chromium only** | Only the browser actually used; runs as non-root | Image is still about 2.9 GB (Chromium + its system libraries + pandas/pyarrow) |
+| **`python:3.12-slim` + Chromium only, runtime and test targets** | Only the browser actually used; runs as non-root; tests ship only in the `test` image | Image is still about 2.9 GB (Chromium + its system libraries + pandas/pyarrow) |
+| **AI as an optional adviser** | Diagnosis and drafting save real time, but every suggestion passes the same validation as a human edit and nothing is applied without a click | Needs an API key and sends masked run evidence to the provider; answers can be wrong, so they are shown with a confidence and never auto-applied |
 
 ---
 
@@ -1019,8 +1113,9 @@ These are known limitations, not hidden ones:
   adapter is the natural place to add them.
 - **Single-node execution.** Runs execute in a thread pool inside one process. The report
   lock works across processes on one host (a shared volume), not across hosts.
-- **No authentication on the UI/API.** Ports are bound to localhost; put it behind SSO or a
-  reverse proxy before exposing it.
+- **One shared login.** The optional Basic auth is a single user with no roles or audit
+  trail; ports are bound to localhost, and for wider exposure put it behind TLS and SSO (a
+  reverse proxy).
 - **Schema evolution** is detected, not automated; `ALTER TABLE` is manual.
 - **Whole-file processing in memory.** This is fine for dashboard exports (up to around
   millions of rows). Streaming or chunked parsing would be needed for bigger files.
@@ -1039,8 +1134,8 @@ These are known limitations, not hidden ones:
   lock.
 - Alerting on failures (Slack/email/webhooks) and Prometheus metrics.
 - A "dry run" mode (download + transform + validate, no load) from the editor.
-- Authenticated UI/API with per-user audit of config changes.
+- Per-user accounts (SSO) with an audit of config changes.
 - Schema migrations generated from config diffs.
-- AI-assisted recovery: when a selector breaks, use an LLM or vision agent (for example
-  browser-use) to propose an updated selector from the failure screenshot and DOM, and have
-  a human confirm it.
+- Deeper AI-assisted recovery: the assistant already diagnoses failures and proposes
+  validated config changes; next, let a vision agent (for example browser-use) try a
+  proposed selector against the live dashboard before offering it.

@@ -31,7 +31,7 @@ ClickHouse HTTP → `http://localhost:8123`, DashDashGo → `APP`.
 | 0.3 | `make up` | Builds, then prints the UI, API docs and Metabase URLs. The first start takes about 2–4 minutes |
 | 0.4 | `docker compose ps -a` | `clickhouse`, `postgres`, `metabase`, `app` → **Up (healthy)**; `metabase-seed` → **Exited (0)** |
 | 0.5 | `docker compose logs metabase-seed \| tail -3` | Ends with `Metabase demo content is ready` |
-| 0.6 | `curl -s APP/api/health` | `{"status":"ok","version":"1.0.0","clickhouse":"up","scheduler":"running","reports":8}` with HTTP 200 |
+| 0.6 | `curl -s APP/api/health` | `{"status":"ok","version":"1.0.0","clickhouse":"up","scheduler":"running","reports":8,"ai":"disabled"}` with HTTP 200 (`"ai":"enabled"` once `AI_API_KEY` is set, section 10c) |
 | 0.7 | `docker compose logs app \| grep "Added bundled"` | `Added bundled report configs: customer_usage, inventory_snapshot, …, weekly_sales` (all 8, on first start) |
 
 ---
@@ -154,8 +154,9 @@ Each failure is recorded with its stage, a message, evidence and a **Retry** but
 | 6.8 | `docker compose start metabase` and wait about 1 minute until healthy | The next run succeeds again |
 | 6.9 | **Warehouse down**: `docker compose stop clickhouse`, then `curl -i APP/api/health` | **503** `{"status":"degraded",…,"clickhouse":"down"}`; the UI shows *Metadata store unavailable*; `ddg run weekly_sales` fails immediately with `cannot connect to ClickHouse at clickhouse:8123` |
 | 6.10 | `docker compose start clickhouse` | Within seconds `/api/health` is `ok` again and the UI works; no app restart is needed |
-| 6.11 | **Data-quality failure**: `ddg run weekly_sales --set 'ingestion.quality.rules=[{column: revenue, min: 1000}]'` | `FAILED at quality - DataQualityError: 54.6% of rows invalid exceeds max_invalid_ratio 2.0%: 153/280 rows rejected (revenue: below minimum 1000 x153)`. Nothing is loaded |
+| 6.11 | **Data-quality failure**: `ddg run weekly_sales --set 'ingestion.quality.rules=[{column: revenue, min: 1000}]'` | `FAILED at quality - DataQualityError: 54.6% of rows invalid exceeds max_invalid_ratio 2.0%: 153/280 rows rejected (revenue: below minimum 1000 x153)`. Nothing is loaded, but the failed *Validate data* step still links **Rejected rows (CSV)** so you can see which rows broke the rule |
 | 6.12 | **Quarantine instead**: the same command plus `--set ingestion.quality.max_invalid_ratio=1` | `SUCCESS … rejected=153 inserted=127`. The run page's *Validate data* step links **Rejected rows (CSV)** (every rejected row with its reason). Then run `ddg run weekly_sales --force` to reload the full, clean week |
+| 6.12a | **Drop instead of quarantine**: the 6.12 command plus `--set ingestion.quality.on_invalid_rows=drop` | `SUCCESS … rejected=153 inserted=127`, but no rejected-rows file: the log says `Dropped 153 invalid rows (on_invalid_rows=drop)` |
 | 6.13 | **Interrupted by a restart**: click **Run now** on `customer_usage`, then within 2 s run `docker compose restart app` | After the app is healthy again, that run shows **Failed** with *Interrupted: the server restarted before this run completed*, not stuck as Running |
 | 6.14 | **Concurrent run**: `curl -XPOST APP/api/reports/weekly_sales/runs` twice in quick succession | Second call → **409** `a run of 'weekly_sales' is already queued or running` |
 
@@ -232,14 +233,51 @@ Each failure is recorded with its stage, a message, evidence and a **Retry** but
 
 ---
 
+## 10b. Security settings
+
+Each of these needs a line in `.env` and `docker compose up -d` (the app is recreated with the new settings).
+
+| # | Action | Expected |
+|---|---|---|
+| 10b.1 | Add `AUTH_USERNAME=admin` and `AUTH_PASSWORD=<something long>`, then open `APP` | The browser asks for a username and password; wrong ones are refused (401) |
+| 10b.2 | `curl -i APP/api/reports` / `curl -u admin:<password> APP/api/reports` / `curl -i APP/api/health` | **401** / 200 with JSON / 200: health stays public for Docker and load balancers |
+| 10b.3 | `curl -i -u admin:<password> -XPOST -H "Origin: https://evil.example" APP/api/reports/weekly_sales/runs` | **403** `cross-site request refused`: another site can't use your logged-in browser to start runs. The same call without the `Origin` header (a script) is accepted |
+| 10b.4 | In the config editor, set a filter value to `${CLICKHOUSE_PASSWORD}` | Validation: `environment variables not allowed in configs: CLICKHOUSE_PASSWORD`; it can't be saved |
+| 10b.5 | Set `source.base_url` to `https://example.com` | `dashboard host 'example.com' is not allowed (allowed: metabase; see ALLOWED_DASHBOARD_HOSTS)`: credentials can't be sent elsewhere |
+| 10b.6 | Add `browser: {launch_args: ["--proxy-server=http://x:1"]}` | `browser flags not allowed: --proxy-server` |
+| 10b.7 | `ddg run weekly_sales --set 'source.filters.region=${POSTGRES_PASSWORD}'` | Refused the same way before anything runs (exit code 2) |
+| 10b.8 | `docker compose exec app python -c "import pytest"` | `ModuleNotFoundError`: the service image has no test tooling (`make test-e2e` uses the `test` image) |
+| 10b.9 | Remove the `AUTH_*` lines and `docker compose up -d` | The UI opens without a login again |
+
+---
+
+## 10c. AI assistant (optional)
+
+Needs a free key: <https://aistudio.google.com/apikey> → **Create API key** → `AI_API_KEY=...` in
+`.env` → `docker compose up -d`. Answers take about 5–90 s; a free model is sometimes
+"overloaded" and the next model in `AI_MODEL` is used automatically.
+
+| # | Action | Expected |
+|---|---|---|
+| 10c.1 | `curl -s APP/api/ai` | `{"enabled":true,"base_url":"https://generativelanguage.googleapis.com/v1beta/openai","models":["gemini-3.6-flash","gemini-flash-latest"]}` |
+| 10c.2 | Open the failed run from 6.1 (wrong password) → **Diagnose with AI** | An *AI diagnosis* card: summary ("the login was rejected…"), category *credentials*, the likely cause citing the screenshot/page text, a fix (update `METABASE_PASSWORD`), a confidence. No config change is offered (credentials are protected) |
+| 10c.3 | `ddg run support_tickets --set 'source.filters.priority=[Critical]'`, then `ddg ai diagnose <run_id>` | Category *filters*: `Critical` is not a value the Priority widget offers; it suggests valid values and prints `dashdashgo retry <run_id> --set 'source.filters.priority=[High, Urgent]'` |
+| 10c.4 | Open that run in the UI | The same diagnosis (stored with the run), with **Retry with suggested change** |
+| 10c.5 | Click **Retry with suggested change** | A new run (*Retry of …*) whose log starts with `Config overrides for this run: source.filters.priority=[High, Urgent]`; the config file itself is unchanged |
+| 10c.6 | **New pipeline** → name `sales_by_product` → *Draft with AI* → choose a CSV from a weekly_sales run (download it from a run's Artifacts) → **Draft config** | The editor fills with a full config: `export.format: csv`, typed columns (`Date`, `LowCardinality(String)`, `Decimal(18, 2)`…), transforms, rules, `table: sales_by_product`, `schedule.enabled: false`; Validation shows **Valid**; notes list what to check (dashboard/card). Nothing is saved until **Create pipeline** |
+| 10c.7 | `ddg ai draft x --sample /app/README.md` | `unsupported sample file 'README.md'; use .csv, .xlsx or .json` |
+| 10c.8 | Remove `AI_API_KEY` and `docker compose up -d` | No AI buttons in the UI; `ddg ai diagnose …` → `the AI assistant is off: set AI_API_KEY …`; `/api/health` → `"ai":"disabled"` |
+
+---
+
 ## 11. Automated tests
 
 | # | Command | Expected |
 |---|---|---|
-| 11.1 | `make test` | `179 passed, 26 deselected` in about 3 s (unit tests, no infrastructure) |
-| 11.2 | `make test-integration` (stack running) | `8 passed` |
-| 11.3 | `make test-e2e` | `18 passed` in about 60 s (real Metabase + Chromium + ClickHouse, isolated database) |
-| 11.4 | `make test-all` | `205 passed` inside the app container |
+| 11.1 | `make test` | `233 passed, 27 deselected` in about 5 s (unit tests, no infrastructure) |
+| 11.2 | `make test-integration` (stack running) | `9 passed` |
+| 11.3 | `make test-e2e` | Rebuilds the app with the `test` image, then `18 passed` in about 75 s (real Metabase + Chromium + ClickHouse, isolated database) |
+| 11.4 | `make test-all` | `260 passed` inside the app (test image). `docker compose up -d --build` returns to the runtime image |
 | 11.5 | `make lint` | `All checks passed!`, `… files already formatted`, `Success: no issues found` |
 | 11.6 | GitHub → **Actions** tab after a push | Workflow **CI** with jobs *Lint, types, unit tests*, *ClickHouse integration tests*, *End-to-end (Docker Compose)*, all green |
 
