@@ -7,6 +7,8 @@ everything that happened, so it can be monitored, retried and audited from a web
 
 A new report is a YAML file, not new code.
 
+![DashDashGo overview: eight pipelines, run statistics and recent-run strips](docs/images/ui-overview.png)
+
 ```
 "Here is a dashboard."                      Metabase: Sales / Sales Report / Weekly Sales
 "DashDashGo acquires the report."           Chromium logs in, navigates, filters, clicks Download
@@ -25,7 +27,11 @@ A new report is a YAML file, not new code.
 ## Contents
 
 - [Quick start](#quick-start)
+- [Running DashDashGo step by step](#running-dashdashgo-step-by-step)
+- [What happens when the stack starts](#what-happens-when-the-stack-starts)
+- [Screenshots](#screenshots)
 - [What's in the box](#whats-in-the-box)
+- [Beyond the brief](#beyond-the-brief)
 - [Architecture](#architecture)
 - [Project structure](#project-structure)
 - [Configuration](#configuration)
@@ -48,35 +54,148 @@ A new report is a YAML file, not new code.
 
 ## Quick start
 
-Requirements: Docker with Compose v2 (about 4 GB RAM free). Python 3 is only needed to
-generate `.env` (or copy it by hand).
+Everything (ClickHouse, a demo Metabase with its data, and DashDashGo) comes up with one
+command and seeds itself; there is nothing to click through first.
 
 ```bash
-git clone <repo> dashdashgo && cd dashdashgo
-
-make env            # .env from .env.example with random secrets  (or: cp .env.example .env)
-make up             # = docker compose up --build -d, then waits for health
+git clone https://github.com/Paras-ydv/DashDashGo.git && cd DashDashGo
+cp .env.example .env               # or: make env   (generates random secrets)
+docker compose up --build -d       # or: make up    (also waits until healthy)
 ```
 
-The first start takes about 2–4 minutes: images build, Metabase initialises, and a
-one-shot seeder creates the demo dashboards. Then open:
+After about 2–4 minutes open **http://localhost:8000**, press **Run** on any pipeline, and
+watch the timeline fill in. Metabase is at **http://localhost:3000**.
 
-| What | URL |
+---
+
+## Running DashDashGo step by step
+
+### 1. Prerequisites
+
+| Need | Why |
 |---|---|
-| DashDashGo UI | http://localhost:8000 (set `APP_PORT` in `.env` if 8000 is taken) |
-| API reference (OpenAPI) | http://localhost:8000/docs |
-| Demo Metabase | http://localhost:3000 (log in with `METABASE_USERNAME` / `METABASE_PASSWORD` from `.env`) |
+| Docker Desktop / Docker Engine with **Compose v2** (`docker compose version`) | Runs every service |
+| About **4 GB** free RAM and 6 GB disk | Metabase (JVM), ClickHouse, Chromium |
+| Free ports **8000** (UI/API), **3000** (Metabase), **8123** (ClickHouse HTTP) | Published on `127.0.0.1` only |
+| *(optional)* `make`, Python 3 | Convenience targets and generating `.env` |
 
-Press **Run** next to any pipeline, or from a terminal:
+### 2. Configure
 
 ```bash
-make run REPORT=weekly_sales        # CSV  -> analytics.sales_metrics
-make run REPORT=customer_usage      # XLSX -> analytics.daily_usage
-make run REPORT=q4_budget_review    # JSON -> analytics.finance_data
-make run REPORT=weekly_sales        # again -> SKIPPED: identical data already loaded
+cp .env.example .env
 ```
 
-`make help` lists every command (`down`, `clean`, `logs`, `test`, `test-e2e`, `lint`, ...).
+The placeholders work for a local run. To use real secrets instead, run `make env`, which
+creates `.env` with random passwords and never overwrites an existing one. If port 8000
+is taken, set `APP_PORT=8080` (or any free port) in `.env`.
+
+### 3. Start
+
+```bash
+docker compose up --build -d
+docker compose ps -a
+```
+
+Expected: `clickhouse`, `postgres`, `metabase` and `app` are **Up (healthy)**, and
+`metabase-seed` is **Exited (0)**. The app only starts once ClickHouse is healthy and
+Metabase has been seeded. `make up` does the same and waits for health, then prints the
+URLs.
+
+```bash
+curl -s http://localhost:8000/api/health
+# {"status":"ok","version":"1.0.0","clickhouse":"up","scheduler":"running","reports":8}
+```
+
+### 4. Use it
+
+| Where | What to do |
+|---|---|
+| **UI** http://localhost:8000 | **Run** a pipeline, open the run to watch the live timeline, browse data, edit configs (**Edit config**, **New pipeline**) |
+| **CLI** | `docker compose exec app dashdashgo run weekly_sales` · `... runs` · `... show <run_id>` · `... data weekly_sales` · `... --help` |
+| **Make** | `make run REPORT=customer_usage` · `make validate` · `make logs` |
+| **API** http://localhost:8000/docs | `curl -X POST localhost:8000/api/reports/weekly_sales/runs` · `curl localhost:8000/api/reports/weekly_sales/data?format=csv` |
+| **Metabase** http://localhost:3000 | The source dashboards (log in with `METABASE_USERNAME` / `METABASE_PASSWORD` from `.env`) |
+| **ClickHouse** http://localhost:8123/play | Query `analytics.*` (loaded data) and `dashdashgo.pipeline_runs` (run metadata) with `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD` |
+
+A guided tour of every feature, with the expected result of each step, is in
+[docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
+
+### 5. Stop, reset, update
+
+```bash
+docker compose down        # stop; data, runs and configs are kept   (make down)
+docker compose down -v     # stop and delete ALL volumes: data, runs, edited configs (make clean)
+docker compose up --build -d   # after pulling new code
+```
+
+The demo warehouse behind Metabase is created only when its volume is new. To pick up new
+demo datasets after an update, reset with `docker compose down -v` (or `make clean`) and
+start again. Report configs are different: new ones shipped in `reports/` are added to an
+existing installation automatically, without touching edited ones.
+
+### 6. Develop from source (optional)
+
+```bash
+make setup                                   # uv sync + Playwright Chromium
+docker compose up -d clickhouse postgres metabase metabase-seed
+export CLICKHOUSE_HOST=localhost METABASE_URL=http://localhost:3000
+uv run dashdashgo run weekly_sales --headed  # watch the browser work
+uv run dashdashgo serve --port 8001          # UI/API from source
+make test lint                               # unit tests, ruff, mypy --strict
+```
+
+Runs started this way write their logs and artifacts to `./storage` on your machine. The
+run page shows *Executed on* for each run, so you can always tell where its files are.
+
+---
+
+## What happens when the stack starts
+
+Seeding is automatic and idempotent. The same thing happens on any machine, every time.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant PG as postgres
+    participant MB as metabase
+    participant SEED as metabase-seed (one-shot)
+    participant CH as clickhouse
+    participant APP as app (DashDashGo)
+
+    Note over PG: first start only (new volume)
+    PG->>PG: init scripts: create metabase + warehouse DBs,<br/>8 demo datasets (views relative to today), read-only role
+    MB->>PG: Metabase app DB migrations
+    MB-->>SEED: /api/health = ok (healthcheck)
+    SEED->>MB: setup admin user, register "Demo Warehouse" (read-only)
+    SEED->>MB: collections, questions, dashboards, filters<br/>(created only if missing - safe to re-run)
+    SEED-->>APP: exits 0 (service_completed_successfully)
+    CH-->>APP: /ping healthy (service_healthy)
+    APP->>APP: add bundled report configs to /data/reports<br/>(add-only; edited/archived ones untouched)
+    APP->>CH: create/migrate dashdashgo.pipeline_runs + pipeline_stage_events
+    APP->>CH: mark runs orphaned by a previous shutdown as FAILED
+    APP->>APP: start scheduler (7 cron schedules) and the UI/API on :8000
+```
+
+| What | Seeded by | When |
+|---|---|---|
+| Demo source data (sales, usage, finance, support, marketing, inventory, web, billing) | `docker/postgres/init/*.sh` + `sql/*.sql` | First start of the `postgres-data` volume |
+| Metabase admin, database connection, 5 collections, 8 questions, 5 dashboards with filters | `demo/metabase_seed.py` (the `metabase-seed` service) | Every `up`; idempotent (looks up by name first) |
+| Report configs (`reports/*.yaml`) | the app at startup | Once per report, into the `app-reports` volume |
+| ClickHouse metadata tables | the app at startup | Every start (`CREATE ... IF NOT EXISTS`, additive `ALTER`) |
+| Report tables (`analytics.*`) | the first run of each pipeline | Created from the config's schema |
+
+---
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Pipeline page](docs/images/ui-pipeline.png) **Pipeline page:** stages derived from the config (source, acquire, transform, validate, load), statistics, duration chart, history, live data preview | ![Run timeline](docs/images/ui-run-timeline.png) **Run detail:** live timeline with every browser step (here both dashboard filters were set through the widgets), row counts, artifacts under their configured file names |
+| ![Quarantined rows](docs/images/ui-run-quarantine.png) **Data quality:** two corrupt inventory rows quarantined (link to the rejected-rows CSV with reasons); 22 valid rows loaded | ![Failed run](docs/images/ui-run-failure.png) **A failed run:** error panel, failure screenshot, the failing step, and a Retry button |
+| ![Screenshot viewer](docs/images/ui-screenshot-viewer.png) **Failure screenshot** in the in-page viewer: Metabase rejected the password | ![Diagnostic card](docs/images/ui-diagnostic-card.png) **Nothing rendered** (dashboard unreachable): a diagnostic card is drawn instead of a blank image |
+| ![Config editor](docs/images/ui-config-editor.png) **Config editor:** live validation mapped to lines, history, archive | ![Runs](docs/images/ui-runs.png) **Run history** across pipelines, filterable by pipeline and status |
+| ![Metabase dashboard](docs/images/metabase-dashboard.png) **The source:** the Metabase *Support Overview* dashboard DashDashGo operates, with its Priority filter open | ![API docs](docs/images/api-docs.png) **API** (OpenAPI at `/docs`): runs, data (JSON/CSV), configs, artifacts |
+| ![Run metadata in ClickHouse](docs/images/clickhouse-metadata.png) **Run metadata** in ClickHouse (`dashdashgo.pipeline_runs`): trigger, status, rows in / rejected / loaded, duration, error | ![Loaded data in ClickHouse](docs/images/clickhouse-data.png) **Loaded data** (`analytics.inventory_snapshot`): typed columns (`Bool`, `Decimal`), flattened supplier JSON, `_run_id` lineage |
 
 ---
 
@@ -109,7 +228,60 @@ more that each exercise something different.
 - **Pipeline management in the UI:** create, edit (live validation, errors mapped to lines), duplicate, version history and restore, and archive, with conflict protection and a guarantee that secrets stay in environment variables.
 - **A complete CLI:** everything the UI does, plus per-run overrides (`--set key=value`, `--headed`, `--no-retry`, `--config FILE`).
 - **UI and API:** an operations UI (overview, pipeline page, run history, run detail with timeline, screenshots, logs and retry) and a JSON API that serves ingested data as JSON or CSV.
-- **Quality gates:** 173 unit tests, 8 ClickHouse integration tests and 18 end-to-end tests, plus `ruff` and `mypy --strict`, all run by GitHub Actions CI.
+- **Quality gates:** 179 unit tests, 8 ClickHouse integration tests and 18 end-to-end tests, plus `ruff` and `mypy --strict`, all run by GitHub Actions CI.
+
+---
+
+## Beyond the brief
+
+The docx asks for Playwright acquisition of the three example reports, Python
+transformation, ClickHouse ingestion and Docker Compose. Everything below was added on top.
+
+**Acquisition**
+- Filters applied **through the dashboard's widgets** like a user (date shortcuts, the
+  relative-date editor, multi-select category lists), through the URL, or both
+  (`filter_mode: auto`), and **verified** afterwards: unknown filters and values the widget
+  doesn't offer fail loudly.
+- Raw downloads stored under **configured file names** (`Weekly_Sales.csv`, `{date}` token).
+- Onboarding pop-ups dismissed automatically; SPA re-render races handled; a wrong password
+  detected in about a second and never retried (avoids account lockouts).
+- **Failure evidence:** a full-page screenshot and redacted HTML for every failed step, an
+  optional Playwright trace (started only after login so passwords are never recorded),
+  and a **diagnostic card** instead of a blank screenshot when the page never loaded.
+- Download validation: empty files, HTML error pages, wrong formats and oversized files are
+  rejected, and the file is hashed.
+
+**Data**
+- **Five extra pipelines** beyond the three in the brief: formatted exports (`$1,234.56`),
+  DateTime hourly data, snapshots with a `Bool` flag, duplicated rows, summary rows,
+  corrupt rows to quarantine, and monthly cron.
+- 13 declarative transforms, including `pivot`, `flatten`, `parse_json`, `parse_numbers` and
+  `compute`; schema-driven type coercion (currency, accounting negatives, locale dates,
+  time zones, exact decimals, ClickHouse range checks).
+- Data-quality rules with **fail / drop / quarantine** policies, a maximum invalid ratio,
+  a rejected-rows CSV, and natural-key uniqueness.
+- **Idempotency in three layers:** content fingerprint (SKIPPED runs), ReplacingMergeTree on
+  the natural key (overlapping windows), and insert deduplication tokens (safe retries).
+- Schema drift detection before the browser starts; lineage columns (`_run_id`,
+  `_ingested_at`) on every row; typed Parquet copy of loaded data.
+
+**Operations**
+- **Web UI:** overview with KPIs and run strips, pipeline pages with a duration chart and
+  data preview, run pages with a **live timeline**, logs, screenshots (in-page viewer),
+  artifacts and **Retry**; light/dark theme.
+- **Config management in the UI:** create, duplicate, edit with live validation and errors
+  mapped to lines, version history and restore, archive, conflict protection, a secret
+  guard, and drift/shared-table warnings.
+- **Full CLI:** `run` with `--set key=value` overrides, `--headed`, `--no-retry`,
+  `--config FILE`; plus `runs`, `show`, `logs --follow`, `retry`, `data`, `stats` and
+  `config new|edit|import|history|restore|archive`.
+- **JSON API** for runs, stages, logs, artifacts and loaded data (JSON or CSV), plus config
+  management.
+- **Scheduling** from each config's cron (standard cron semantics), hot-reloaded on edit;
+  per-report locking across processes; interrupted and stale runs cleaned up on start.
+- Structured per-run JSON logs, secret redaction everywhere, and *Executed on* tracking.
+- **Quality gates:** 179 unit tests, 8 ClickHouse integration tests and 18 end-to-end tests,
+  `ruff`, `mypy --strict`, and GitHub Actions CI that builds and tests the whole stack.
 
 ---
 
@@ -151,6 +323,41 @@ The **orchestrator** (`orchestration/pipeline.py`, about 200 lines) only sequenc
 services and records each stage. `container.py` is the single composition root: it's the
 only place infrastructure objects are constructed, which keeps modules free of global state
 and makes every dependency swappable in tests.
+
+### Workflow of one run
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as UI / CLI / API / cron
+    participant RS as RunService
+    participant O as Orchestrator
+    participant B as Playwright + MetabaseAdapter
+    participant MB as Metabase
+    participant I as Ingestion
+    participant CH as ClickHouse
+    participant S as Storage
+
+    User->>RS: run "support_tickets"
+    RS->>RS: load + validate YAML (fail fast), take per-report lock
+    RS->>CH: pipeline_runs: QUEUED
+    RS->>O: execute
+    O->>CH: preflight: create table or detect schema drift
+    loop attempt 1..max_attempts (exponential backoff on retryable errors)
+        O->>B: fresh browser
+        B->>MB: log in, open collection / dashboard / card
+        B->>MB: set filters via widgets (or URL), verify
+        B->>MB: Download (CSV / XLSX / JSON)
+        B-->>S: on failure: screenshot + redacted HTML (+ trace)
+    end
+    B-->>S: raw/<report>/<date>/<run>/Support_Tickets_<date>.csv
+    O->>I: parse -> transform -> coerce types -> quality rules
+    I-->>S: rejected_rows.csv (quarantine), processed/data.parquet
+    O->>CH: identical data already loaded? -> SKIPPED
+    O->>CH: batched INSERT (dedup tokens) -> verify count by _run_id
+    O->>CH: pipeline_runs: SUCCESS / FAILED + every stage event
+    O-->>S: logs/.../run.log, run.json
+```
 
 ### Run lifecycle
 
@@ -310,9 +517,44 @@ $ dashdashgo validate
   - ingestion.transforms.2: unknown transform 'explode'; available: change_case, compute, ...
 ```
 
+#### Configuration reference
+
+| Key | Default | Meaning |
+|---|---|---|
+| `name` | *required* | Report id; must equal the file name (`[a-z][a-z0-9_]+`) |
+| `description`, `enabled` | `""`, `true` | Shown in the UI; disabled reports are not scheduled |
+| `source.platform` | `metabase` | Selects the dashboard adapter |
+| `source.base_url` | *required* | Dashboard URL (usually `${METABASE_URL}`) |
+| `source.login_path` | `/auth/login` | Login page path |
+| `source.credentials.username` / `.password` | *required* | Password must be an `${ENV_VAR}` reference when saved through the UI/CLI |
+| `source.location.collection` | `[]` | Collection path from *Our analytics* |
+| `source.location.dashboard` + `.card` / `.question` | one required | What to open and download |
+| `source.filters` | `{}` | `slug: value`, `slug: [v1, v2]`, or `slug: {value, label}` |
+| `source.filter_mode` | `auto` | `widget` (operate the filter widgets), `url`, or `auto` (widget, URL fallback) |
+| `source.export.format` | *required* | `csv`, `xlsx`, `json` |
+| `source.export.formatted` | `false` | Metabase "Keep the data formatted" (locale numbers and dates) |
+| `source.export.filename` | Metabase's name | Stored file name; `{date}` = run date; extension must match the format |
+| `source.selectors.*` | pinned Metabase defaults | Override UI hooks after a Metabase upgrade |
+| `browser.engine` / `headless` / `viewport` | `chromium` / `true` / 1440×900 | Browser |
+| `browser.timeout_ms` / `navigation_timeout_ms` / `download_timeout_ms` | 30 s / 45 s / 120 s | Step, page-load and download timeouts |
+| `browser.screenshot_on_failure` / `trace` | `true` / `on_failure` | Failure evidence (`off`, `on_failure`, `always`) |
+| `ingestion.reader.encoding` / `delimiter` / `sheet` / `header_row` / `records_path` | `utf-8-sig` / auto / first / 0 / – | How to read the file |
+| `ingestion.expected_columns` | `[]` | Columns the download must contain (detects upstream drift) |
+| `ingestion.transforms` | `[]` | Ordered steps (below) |
+| `ingestion.quality.on_invalid_rows` | `quarantine` | `fail`, `drop`, `quarantine` |
+| `ingestion.quality.max_invalid_ratio` / `min_rows` | `0.05` / `1` | Abort thresholds |
+| `ingestion.quality.rules[]` | `[]` | `{column, not_null, min, max, allowed, pattern}`; `min`/`max` on numeric columns only |
+| `destination.database` / `table` | *required* | ClickHouse target |
+| `destination.columns[]` | *required* | `{name, type, format?, comment?}` with ClickHouse types |
+| `destination.order_by` | *required* | Natural key = sort key = deduplication key |
+| `destination.partition_by` / `create_table` / `batch_size` | – / `true` / 50 000 | Table layout and loading |
+| `retry.max_attempts` / `initial_delay_seconds` / `backoff_multiplier` / `max_delay_seconds` | 3 / 2 / 2 / 60 | Retry policy for acquisition, preflight and inserts |
+| `schedule.enabled` / `cron` / `timezone` | `false` / – / `UTC` | Standard 5-field cron (`1` = Monday) |
+
 **Transform steps:** `normalize_columns`, `rename`, `drop_columns`, `strip_whitespace`,
 `change_case`, `fill_null`, `drop_duplicates`, `filter_rows`, `parse_json`, `flatten`,
-`pivot`, `parse_numbers` (for formatted exports such as `$1,234.56`) and `compute`. Type conversion is not a step: it's derived from `destination.columns`.
+`pivot`, `parse_numbers` (for formatted exports such as `$1,234.56`) and `compute`. Type
+conversion is not a step: it's derived from `destination.columns`.
 
 **Supported column types:** `String`, `FixedString(N)`, `(U)Int8–64`, `Float32/64`,
 `Decimal(P,S)`, `Bool`, `Date`, `Date32`, `DateTime[('tz')]`, `DateTime64(p[, 'tz'])`,
@@ -722,7 +964,7 @@ A step-by-step **manual test script**, with the expected result for every featur
 mode, is in [docs/MANUAL_TESTING.md](docs/MANUAL_TESTING.md).
 
 ```bash
-make test              # unit tests (173): no infrastructure needed, about 3 s
+make test              # unit tests (179): no infrastructure needed, about 3 s
 make test-integration  # Python <-> ClickHouse (8): needs the stack running
 make test-e2e          # Metabase -> Playwright -> ClickHouse (18), inside the app container
 make test-all          # everything, inside the app container

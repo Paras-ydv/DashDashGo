@@ -236,10 +236,10 @@ Each failure is recorded with its stage, a message, evidence and a **Retry** but
 
 | # | Command | Expected |
 |---|---|---|
-| 11.1 | `make test` | `173 passed, 26 deselected` in about 3 s (unit tests, no infrastructure) |
+| 11.1 | `make test` | `179 passed, 26 deselected` in about 3 s (unit tests, no infrastructure) |
 | 11.2 | `make test-integration` (stack running) | `8 passed` |
 | 11.3 | `make test-e2e` | `18 passed` in about 60 s (real Metabase + Chromium + ClickHouse, isolated database) |
-| 11.4 | `make test-all` | `199 passed` inside the app container |
+| 11.4 | `make test-all` | `205 passed` inside the app container |
 | 11.5 | `make lint` | `All checks passed!`, `… files already formatted`, `Success: no issues found` |
 | 11.6 | GitHub → **Actions** tab after a push | Workflow **CI** with jobs *Lint, types, unit tests*, *ClickHouse integration tests*, *End-to-end (Docker Compose)*, all green |
 
